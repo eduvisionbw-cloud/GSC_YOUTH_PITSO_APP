@@ -1,0 +1,47 @@
+{
+  "entities": {
+    "Registration": {
+      "title": "Registration",
+      "description": "Youth Pitso individual or company registration",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["individual", "company", "institution", "organisation"] },
+        "name": { "type": "string", "maxLength": 150 },
+        "companyName": { "type": "string", "maxLength": 150 },
+        "contactPerson": { "type": "string", "maxLength": 150 },
+        "phone": { "type": "string", "pattern": "^\\+267\\d{7,8}$" },
+        "email": { "type": "string", "format": "email" },
+        "ward": { "type": "string", "enum": ["Babusi", "Boitshoko", "Bontleng", "Dilalelo", "Mophato", "Old Industrial", "Old Naledi", "Selemela", "Village", "White City", "Other"] },
+        "plotNumber": { "type": "string", "maxLength": 50 },
+        "idNumber": { "type": "string", "maxLength": 50 },
+        "profession": { "type": "string", "maxLength": 100 },
+        "sector": { "type": "string", "enum": ["Services", "Retail", "Wholesale", "Education", "Construction", "Manufacturing", "Mining", "Agriculture", "ICT", "Public sector", "Other"] },
+        "skills": { "type": "string", "maxLength": 500 },
+        "goodsAndServices": { "type": "string", "maxLength": 500 },
+        "numberOfEmployees": { "type": "number", "minimum": 0 },
+        "consent": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["type", "phone", "email", "ward", "consent"]
+    },
+    "Stat": {
+      "title": "Stat",
+      "description": "Application statistics counter",
+      "type": "object",
+      "properties": {
+        "count": { "type": "number" }
+      },
+      "required": ["count"]
+    }
+  },
+  "firestore": {
+    "/registrations/{registrationId}": {
+      "schema": "Registration",
+      "description": "Store individual and company registrations for Gaborone South Youth Pitso"
+    },
+    "/stats/{statId}": {
+      "schema": "Stat",
+      "description": "Application counters like programme downloads"
+    }
+  }
+}
