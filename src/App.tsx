@@ -222,7 +222,7 @@ export default function App() {
       setRegistrationsList(list);
     } catch (err: any) {
       console.warn('Error fetching registrations:', err?.message || err);
-      showError(err?.message || 'Failed to fetch registrations from Firestore.');
+      showError(err?.message || 'Failed to fetch registrations from the database.');
     } finally {
       setIsRefreshingData(false);
     }
@@ -550,69 +550,119 @@ export default function App() {
           </div>
 
           {/* Desktop Navigation */}
-          <nav className="hidden lg:flex items-center space-x-1 bg-[#EAF5FC] p-1.5 rounded-xl border border-[#C9CCD1]">
-            {[
-              { id: 'overview', label: 'Overview', icon: Users },
-              { id: 'programme', label: 'Programme', icon: Clock, onClick: () => { setActiveTab('overview'); setTimeout(() => document.getElementById('programme-section')?.scrollIntoView({ behavior: 'smooth' }), 100); } },
-              { id: 'register', label: 'Registration', icon: Award },
-              { id: 'resources', label: 'Resources', icon: BookOpen }
-            ].map(tab => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => {
-                    if (tab.onClick) {
-                      tab.onClick();
-                    } else {
-                      setActiveTab(tab.id as any);
-                    }
-                  }}
-                  className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 cursor-pointer min-h-[40px] ${
-                    isActive ? 'bg-[#2E6DA4] text-white shadow-xs' : 'text-[#55565A] hover:bg-white hover:text-[#2E6DA4]'
-                  }`}
-                >
-                  <Icon className={`w-4 h-4 ${isActive ? 'text-[#72BEE7]' : 'text-[#55565A]'}`} />
-                  <span>{tab.label}</span>
-                </button>
-              );
-            })}
-          </nav>
+          {adminUser ? (
+            <div className="hidden lg:flex items-center space-x-2 bg-[#EAF5FC] p-1.5 rounded-xl border border-[#C9CCD1]">
+              <button
+                onClick={() => { setActiveTab('register'); setMobileMenuOpen(false); }}
+                className={`flex items-center space-x-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer min-h-[40px] ${
+                  activeTab === 'register' 
+                    ? 'bg-[#2E6DA4] text-white shadow-2xs' 
+                    : 'bg-white hover:bg-[#2E6DA4] text-[#2E6DA4] hover:text-white border border-[#C9CCD1]'
+                }`}
+                title="Register New Applicant"
+              >
+                <Users className="w-4 h-4 shrink-0" />
+                <span>Register</span>
+              </button>
+
+              <button
+                onClick={fetchRegistrations}
+                disabled={isRefreshingData}
+                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold bg-white hover:bg-slate-100 text-[#1F2328] border border-[#C9CCD1] transition-all cursor-pointer min-h-[40px]"
+                title="Refresh Database Records"
+              >
+                <RefreshCw className={`w-4 h-4 text-[#2E6DA4] ${isRefreshingData ? 'animate-spin' : ''}`} />
+                <span>{isRefreshingData ? 'Refreshing...' : 'Refresh'}</span>
+              </button>
+
+              <button
+                onClick={exportToCSV}
+                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold bg-[#2E6DA4] hover:bg-[#245885] text-white shadow-2xs transition-all cursor-pointer min-h-[40px]"
+                title="Export Registrations to CSV"
+              >
+                <Download className="w-4 h-4 shrink-0" />
+                <span>Export CSV</span>
+              </button>
+            </div>
+          ) : (
+            <nav className="hidden lg:flex items-center space-x-1 bg-[#EAF5FC] p-1.5 rounded-xl border border-[#C9CCD1]">
+              {[
+                { id: 'overview', label: 'Overview', icon: Users },
+                { id: 'programme', label: 'Programme', icon: Clock, onClick: () => { setActiveTab('overview'); setTimeout(() => document.getElementById('programme-section')?.scrollIntoView({ behavior: 'smooth' }), 100); } },
+                { id: 'register', label: 'Registration', icon: Award },
+                { id: 'resources', label: 'Resources', icon: BookOpen }
+              ].map(tab => {
+                const Icon = tab.icon;
+                const isActive = activeTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => {
+                      if (tab.onClick) {
+                        tab.onClick();
+                      } else {
+                        setActiveTab(tab.id as any);
+                      }
+                    }}
+                    className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 cursor-pointer min-h-[40px] ${
+                      isActive ? 'bg-[#2E6DA4] text-white shadow-xs' : 'text-[#55565A] hover:bg-white hover:text-[#2E6DA4]'
+                    }`}
+                  >
+                    <Icon className={`w-4 h-4 ${isActive ? 'text-[#72BEE7]' : 'text-[#55565A]'}`} />
+                    <span>{tab.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          )}
 
           {/* Action Buttons & Mobile Hamburger Toggle */}
           <div className="flex items-center space-x-2 sm:space-x-3">
-            {/* Admin Button */}
+            {/* Admin Dashboard / Login Button */}
             {adminUser ? (
-              <button
-                onClick={() => { setActiveTab('admin'); setMobileMenuOpen(false); }}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-2 sm:px-3.5 sm:py-2.5 rounded-lg text-xs sm:text-sm flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors shrink-0 min-h-[44px]"
-                title="Admin Dashboard"
-              >
-                <ShieldCheck className="w-4 h-4 shrink-0" />
-                <span className="hidden sm:inline">Admin Dashboard</span>
-                <span className="sm:hidden">Admin</span>
-              </button>
-            ) : (
-              <button
-                onClick={() => { setActiveTab('admin'); setMobileMenuOpen(false); }}
-                className="bg-white hover:bg-[#EAF5FC] text-[#2E6DA4] border border-[#C9CCD1] font-semibold px-2.5 py-2 sm:px-3.5 sm:py-2.5 rounded-lg text-xs sm:text-sm flex items-center gap-1.5 cursor-pointer shadow-2xs transition-colors shrink-0 min-h-[44px]"
-                title="Admin Login"
-              >
-                <Lock className="w-4 h-4 text-[#2E6DA4] shrink-0" />
-                <span className="hidden sm:inline">Admin Login</span>
-                <span className="sm:hidden">Login</span>
-              </button>
-            )}
+              <>
+                <button
+                  onClick={() => { setActiveTab('admin'); setMobileMenuOpen(false); }}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-2 sm:px-3.5 sm:py-2.5 rounded-xl text-xs sm:text-sm flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors shrink-0 min-h-[44px]"
+                  title="Admin Dashboard"
+                >
+                  <ShieldCheck className="w-4 h-4 shrink-0" />
+                  <span className="hidden sm:inline">Admin Dashboard</span>
+                  <span className="sm:hidden">Admin</span>
+                </button>
 
-            {/* Persistent Register Button */}
-            <button
-              onClick={() => { setActiveTab('register'); setMobileMenuOpen(false); }}
-              className="bg-[#2E6DA4] hover:bg-[#245885] text-white font-bold px-3 py-2 sm:px-4 sm:py-2.5 rounded-lg shadow-sm transition flex items-center space-x-1.5 cursor-pointer text-xs sm:text-sm shrink-0 min-h-[44px]"
-            >
-              <Users className="w-4 h-4 text-white shrink-0" />
-              <span>Register</span>
-            </button>
+                {/* Red Logout Button on the Right */}
+                <button
+                  onClick={handleAdminLogout}
+                  className="bg-[#BA1A1A] hover:bg-red-700 text-white font-bold px-3 py-2 sm:px-3.5 sm:py-2.5 rounded-xl shadow-xs transition flex items-center gap-1.5 cursor-pointer text-xs sm:text-sm shrink-0 min-h-[44px]"
+                  title="Logout Administrator"
+                >
+                  <LogOut className="w-4 h-4 shrink-0 text-white" />
+                  <span className="hidden sm:inline">Logout</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => { setActiveTab('admin'); setMobileMenuOpen(false); }}
+                  className="bg-white hover:bg-[#EAF5FC] text-[#2E6DA4] border border-[#C9CCD1] font-semibold px-2.5 py-2 sm:px-3.5 sm:py-2.5 rounded-xl text-xs sm:text-sm flex items-center gap-1.5 cursor-pointer shadow-2xs transition-colors shrink-0 min-h-[44px]"
+                  title="Admin Login"
+                >
+                  <Lock className="w-4 h-4 text-[#2E6DA4] shrink-0" />
+                  <span className="hidden sm:inline">Admin Login</span>
+                  <span className="sm:hidden">Login</span>
+                </button>
+
+                {/* Persistent Register Button for Public */}
+                <button
+                  onClick={() => { setActiveTab('register'); setMobileMenuOpen(false); }}
+                  className="bg-[#2E6DA4] hover:bg-[#245885] text-white font-bold px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl shadow-sm transition flex items-center space-x-1.5 cursor-pointer text-xs sm:text-sm shrink-0 min-h-[44px]"
+                >
+                  <Users className="w-4 h-4 text-white shrink-0" />
+                  <span>Register</span>
+                </button>
+              </>
+            )}
 
             {/* Hamburger Menu Toggle */}
             <button
@@ -673,24 +723,60 @@ export default function App() {
               );
             })}
 
+            {adminUser && (
+              <div className="pt-2 border-t border-[#C9CCD1] space-y-2">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-[#2E6DA4] px-2 pt-1">
+                  Admin Tools
+                </div>
+                <button
+                  onClick={() => { setActiveTab('register'); setMobileMenuOpen(false); }}
+                  className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-left text-sm font-bold bg-[#EAF5FC] text-[#2E6DA4] hover:bg-[#2E6DA4] hover:text-white transition-colors"
+                >
+                  <Users className="w-5 h-5" />
+                  <span>Register New Applicant</span>
+                </button>
+                <button
+                  onClick={() => { fetchRegistrations(); setMobileMenuOpen(false); }}
+                  className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-left text-sm font-bold bg-slate-100 text-[#1F2328] hover:bg-slate-200 transition-colors"
+                >
+                  <RefreshCw className="w-5 h-5 text-[#2E6DA4]" />
+                  <span>Refresh Database</span>
+                </button>
+                <button
+                  onClick={() => { exportToCSV(); setMobileMenuOpen(false); }}
+                  className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-left text-sm font-bold bg-[#2E6DA4] text-white hover:bg-[#245885] transition-colors"
+                >
+                  <Download className="w-5 h-5" />
+                  <span>Export CSV</span>
+                </button>
+              </div>
+            )}
+
             <div className="pt-2 border-t border-[#C9CCD1] mt-2">
               <button
                 onClick={() => {
-                  setActiveTab('admin');
-                  setMobileMenuOpen(false);
+                  if (adminUser) {
+                    handleAdminLogout();
+                    setMobileMenuOpen(false);
+                  } else {
+                    setActiveTab('admin');
+                    setMobileMenuOpen(false);
+                  }
                 }}
                 className={`w-full flex items-center space-x-3 px-3 py-3 rounded-xl text-left text-sm font-semibold transition-colors cursor-pointer min-h-[48px] ${
-                  activeTab === 'admin' 
+                  adminUser 
+                    ? 'bg-[#BA1A1A] text-white shadow-xs hover:bg-red-700' 
+                    : activeTab === 'admin'
                     ? 'bg-[#2E6DA4] text-white shadow-xs' 
                     : 'text-[#1F2328] hover:bg-[#EAF5FC]'
                 }`}
               >
-                <div className={`p-2 rounded-lg shrink-0 ${activeTab === 'admin' ? 'bg-white/20 text-white' : 'bg-[#EAF5FC] text-[#2E6DA4]'}`}>
-                  <ShieldCheck className="w-5 h-5" />
+                <div className={`p-2 rounded-lg shrink-0 ${adminUser ? 'bg-white/20 text-white' : activeTab === 'admin' ? 'bg-white/20 text-white' : 'bg-[#EAF5FC] text-[#2E6DA4]'}`}>
+                  {adminUser ? <LogOut className="w-5 h-5" /> : <ShieldCheck className="w-5 h-5" />}
                 </div>
                 <div>
-                  <div className="font-bold text-sm">{adminUser ? 'Admin Dashboard (Logged In)' : 'Admin Portal Login'}</div>
-                  <div className={`text-xs ${activeTab === 'admin' ? 'text-white/80' : 'text-[#55565A]'}`}>
+                  <div className="font-bold text-sm">{adminUser ? 'Logout Admin' : 'Admin Portal Login'}</div>
+                  <div className={`text-xs ${adminUser || activeTab === 'admin' ? 'text-white/80' : 'text-[#55565A]'}`}>
                     {adminUser ? adminUser.email : 'Authorized constituency administrators'}
                   </div>
                 </div>
@@ -957,7 +1043,7 @@ export default function App() {
                     <CheckCircle2 className="w-10 h-10 text-[#2E6DA4]" />
                   </div>
                   <h3 className="text-xl sm:text-2xl font-bold text-[#1F2328]">Registration Successful!</h3>
-                  <p className="text-xs sm:text-sm text-[#55565A]">Your registration has been successfully saved to the Firestore database under the recognizable document ID:</p>
+                  <p className="text-xs sm:text-sm text-[#55565A]">Your registration has been successfully saved to the database under the recognizable document ID:</p>
                   <div className="bg-white py-3 px-4 rounded-xl border border-[#72BEE7] text-base sm:text-xl font-mono font-bold text-[#2E6DA4] shadow-2xs select-all break-all">
                     {ticketResult}
                   </div>
@@ -1341,87 +1427,94 @@ export default function App() {
             ) : (
               <div className="space-y-6 sm:space-y-8">
                 
-                {/* Admin Header Card */}
-                <div className="bg-white p-5 sm:p-6 rounded-2xl border border-[#C9CCD1] border-b-4 border-b-[#72BEE7] shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="bg-[#EAF5FC] text-[#2E6DA4] border border-[#72BEE7]/50 text-xs px-2.5 py-0.5 rounded-full font-bold">Authenticated Admin</span>
-                      <span className="text-xs text-[#55565A] font-medium">{adminUser.email}</span>
+                {/* Robust Admin Header Card */}
+                <div className="bg-white p-6 sm:p-7 rounded-2xl border border-[#C9CCD1] border-l-8 border-l-[#2E6DA4] shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-5 relative overflow-hidden">
+                  <div className="space-y-1.5 z-10">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <span className="bg-[#EAF5FC] text-[#2E6DA4] border border-[#72BEE7]/60 text-xs px-3 py-1 rounded-full font-bold flex items-center gap-1.5 shadow-2xs">
+                        <ShieldCheck className="w-3.5 h-3.5 text-[#2E6DA4]" />
+                        <span>Authenticated Admin</span>
+                      </span>
+                      <span className="text-xs font-mono text-[#55565A] bg-slate-50 px-2.5 py-1 rounded-md border border-[#C9CCD1]/60">
+                        {adminUser.email}
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 text-xs text-emerald-700 font-semibold bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        <span>Database Live & Syncing</span>
+                      </span>
                     </div>
-                    <h2 className="text-xl sm:text-2xl font-extrabold text-[#1F2328] mt-1">Economic Initiatives Registration Dashboard</h2>
+                    <h2 className="text-2xl sm:text-3xl font-extrabold text-[#1F2328] tracking-tight pt-1">
+                      Economic Initiatives Admin Dashboard
+                    </h2>
+                    <p className="text-xs sm:text-sm text-[#55565A]">
+                      Centralized command center for managing constituency registrations, PDF analytics, and report exports.
+                    </p>
                   </div>
-                  <div className="flex flex-col xs:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
-                    <button
-                      onClick={fetchRegistrations}
-                      disabled={isRefreshingData}
-                      className="w-full xs:w-auto bg-white hover:bg-[#EAF5FC] text-[#2E6DA4] border border-[#C9CCD1] font-semibold px-3.5 py-2.5 rounded-xl text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs transition-colors min-h-[44px]"
-                      title="Refresh registrations from Firestore"
-                    >
-                      <RefreshCw className={`w-4 h-4 ${isRefreshingData ? 'animate-spin' : ''}`} />
-                      <span>{isRefreshingData ? 'Refreshing...' : 'Refresh Records'}</span>
-                    </button>
-                    <button
-                      onClick={exportToCSV}
-                      className="w-full xs:w-auto bg-[#2E6DA4] hover:bg-[#245885] text-white font-semibold px-4 py-2.5 rounded-xl text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors min-h-[44px]"
-                    >
-                      <Download className="w-4 h-4 text-white" />
-                      <span>Export CSV</span>
-                    </button>
+
+                  {/* Red Logout Button on the Right */}
+                  <div className="flex items-center gap-2.5 z-10 shrink-0">
                     <button
                       onClick={handleAdminLogout}
-                      className="w-full xs:w-auto bg-white hover:bg-red-50 text-red-700 font-semibold px-4 py-2.5 rounded-xl text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer border border-[#C9CCD1] transition-colors min-h-[44px]"
+                      className="w-full sm:w-auto bg-[#BA1A1A] hover:bg-red-700 text-white font-bold px-4 py-2.5 rounded-xl text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors min-h-[44px]"
+                      title="Logout from Admin Portal"
                     >
-                      <LogOut className="w-4 h-4" />
+                      <LogOut className="w-4 h-4 text-white" />
                       <span>Logout</span>
                     </button>
                   </div>
                 </div>
 
-                {/* Stat Cards Stack (1-col on mobile, 2-col on tablet, 5 across on desktop) */}
+                {/* Stat Cards Stack */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 sm:gap-6">
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] shadow-xs">
-                    <div className="text-xs font-bold text-[#55565A] uppercase tracking-wider">Total Registrations</div>
-                    <div className="text-2xl sm:text-3xl font-extrabold text-[#2E6DA4] mt-2">{totalCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1">Live Firestore records</p>
+                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#2E6DA4] shadow-2xs hover:shadow-xs transition-shadow">
+                    <div className="flex items-center justify-between text-xs font-bold text-[#55565A] uppercase tracking-wider">
+                      <span>Total Registrations</span>
+                      <Users className="w-4 h-4 text-[#2E6DA4]" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-black text-[#2E6DA4] mt-2">{totalCount}</div>
+                    <p className="text-xs text-[#55565A] mt-1 font-medium">Live database records</p>
                   </div>
 
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] shadow-xs">
-                    <div className="text-xs font-bold text-[#55565A] uppercase tracking-wider">Programme Downloads</div>
-                    <div className="text-2xl sm:text-3xl font-extrabold text-[#2E6DA4] mt-2">{programmeDownloadsCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1">PDF downloads tracked live</p>
+                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#72BEE7] shadow-2xs hover:shadow-xs transition-shadow">
+                    <div className="flex items-center justify-between text-xs font-bold text-[#55565A] uppercase tracking-wider">
+                      <span>Programme Downloads</span>
+                      <Download className="w-4 h-4 text-[#72BEE7]" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-black text-[#2E6DA4] mt-2">{programmeDownloadsCount}</div>
+                    <p className="text-xs text-[#55565A] mt-1 font-medium">PDF downloads tracked live</p>
                   </div>
 
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] shadow-xs">
+                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-sky-500 shadow-2xs hover:shadow-xs transition-shadow">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-[#55565A] uppercase tracking-wider">Individuals</span>
-                      <span className="text-xs font-bold bg-[#EAF5FC] text-[#2E6DA4] px-2 py-0.5 rounded">
+                      <span className="text-xs font-bold bg-[#EAF5FC] text-[#2E6DA4] px-2 py-0.5 rounded border border-[#72BEE7]/40">
                         {totalCount > 0 ? Math.round((individualCount / totalCount) * 100) : 0}%
                       </span>
                     </div>
-                    <div className="text-2xl sm:text-3xl font-extrabold text-[#1F2328] mt-2">{individualCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1">Youth & individual delegates</p>
+                    <div className="text-2xl sm:text-3xl font-black text-[#1F2328] mt-2">{individualCount}</div>
+                    <p className="text-xs text-[#55565A] mt-1 font-medium">Youth & individual delegates</p>
                   </div>
 
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] shadow-xs">
+                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#2E6DA4] shadow-2xs hover:shadow-xs transition-shadow">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-[#55565A] uppercase tracking-wider">Companies</span>
-                      <span className="text-xs font-bold bg-[#2E6DA4]/10 text-[#2E6DA4] px-2 py-0.5 rounded">
+                      <span className="text-xs font-bold bg-[#2E6DA4]/10 text-[#2E6DA4] px-2 py-0.5 rounded border border-[#2E6DA4]/30">
                         {totalCount > 0 ? Math.round((companyCount / totalCount) * 100) : 0}%
                       </span>
                     </div>
-                    <div className="text-2xl sm:text-3xl font-extrabold text-[#2E6DA4] mt-2">{companyCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1">Private businesses & startups</p>
+                    <div className="text-2xl sm:text-3xl font-black text-[#2E6DA4] mt-2">{companyCount}</div>
+                    <p className="text-xs text-[#55565A] mt-1 font-medium">Private businesses & startups</p>
                   </div>
 
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] shadow-xs sm:col-span-2 lg:col-span-1">
+                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-indigo-600 shadow-2xs hover:shadow-xs transition-shadow sm:col-span-2 lg:col-span-1">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-[#55565A] uppercase tracking-wider">Institutions & Orgs</span>
-                      <span className="text-xs font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded">
+                      <span className="text-xs font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-200">
                         {totalCount > 0 ? Math.round(((institutionCount + organisationCount) / totalCount) * 100) : 0}%
                       </span>
                     </div>
-                    <div className="text-2xl sm:text-3xl font-extrabold text-indigo-700 mt-2">{institutionCount + organisationCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1">{institutionCount} Institutions, {organisationCount} Orgs</p>
+                    <div className="text-2xl sm:text-3xl font-black text-indigo-700 mt-2">{institutionCount + organisationCount}</div>
+                    <p className="text-xs text-[#55565A] mt-1 font-medium">{institutionCount} Inst., {organisationCount} Orgs</p>
                   </div>
                 </div>
 
@@ -1777,7 +1870,7 @@ export default function App() {
 
           <div className="border-t border-[#C9CCD1] pt-6 flex flex-col sm:flex-row items-center justify-between text-xs text-[#55565A] gap-2">
             <p>© 2026 Gaborone South Constituency Office. All rights reserved.</p>
-            <p className="text-center sm:text-right">Republic of Botswana • Dedicated to Economic Inclusion & Community Development</p>
+            <p className="text-center sm:text-right font-medium text-[#2E6DA4]">Developed by Quinton @ IfThenElse (+267 72488754)</p>
           </div>
         </div>
       </footer>
