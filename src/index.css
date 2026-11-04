@@ -24,9 +24,56 @@
 }
 
 @layer base {
+  html, body {
+    width: 100%;
+    overflow-x: hidden;
+  }
   body {
     font-family: 'Outfit', sans-serif;
     background-color: #EAF5FC;
     color: #1F2328;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.text-fluid-hero {
+  font-size: clamp(1.65rem, 4.5vw, 3.25rem);
+  line-height: 1.15;
+}
+
+.text-fluid-title {
+  font-size: clamp(1.25rem, 3vw, 2.25rem);
+  line-height: 1.25;
+}
+
+@keyframes kenburns {
+  0% {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  100% {
+    transform: scale(1.09) translate3d(0, -10px, 0);
+  }
+}
+
+.hero-slide-image {
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.animate-kenburns {
+  animation: kenburns 16s cubic-bezier(0.25, 1, 0.5, 1) infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
