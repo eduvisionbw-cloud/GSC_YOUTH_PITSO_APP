@@ -20,6 +20,8 @@
         "goodsAndServices": { "type": "string", "maxLength": 500 },
         "numberOfEmployees": { "type": "number", "minimum": 0 },
         "consent": { "type": "boolean" },
+        "id": { "type": "string", "maxLength": 100 },
+        "ticketNumber": { "type": "string", "maxLength": 100 },
         "createdAt": { "type": "string" }
       },
       "required": ["type", "phone", "email", "ward", "consent"]
@@ -37,7 +39,7 @@
   "firestore": {
     "/registrations/{registrationId}": {
       "schema": "Registration",
-      "description": "Store individual and company registrations for Gaborone South Youth Pitso"
+      "description": "Store registrations with recognizable document IDs following convention REG-2026-[CATEGORY]-[PHONE] (e.g. REG-2026-INDIVIDUAL-26771234567)"
     },
     "/stats/{statId}": {
       "schema": "Stat",

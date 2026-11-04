@@ -3,14 +3,21 @@ import {
   Users, Award, BookOpen, Search, MapPin, 
   Clock, CheckCircle2, Sparkles, Download, 
   Building2, ShieldCheck, LogOut, Lock, AlertCircle, Menu, X,
-  TrendingUp, ChevronLeft, ChevronRight, Filter, SlidersHorizontal
+  TrendingUp, ChevronLeft, ChevronRight, Filter, SlidersHorizontal,
+  RefreshCw
 } from 'lucide-react';
-import { db, auth } from './firebase';
+import { 
+  db, auth, isFirebaseConfigured, missingFirebaseEnvVars,
+  mapFirebaseAuthError, isAuthorizedAdminEmail, getAdminEmails
+} from './firebase';
 import { 
   collection, addDoc, getDocs, query, where, serverTimestamp,
   doc, getDoc, setDoc, increment
 } from 'firebase/firestore';
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { 
+  signOut, onAuthStateChanged, User,
+  GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult
+} from 'firebase/auth';
 
 const WARDS = ['Babusi', 'Boitshoko', 'Bontleng', 'Dilalelo', 'Mophato', 'Old Industrial', 'Old Naledi', 'Selemela', 'Village', 'White City', 'Other'];
 const SECTORS = ['Services', 'Retail', 'Wholesale', 'Education', 'Construction', 'Manufacturing', 'Mining', 'Agriculture', 'ICT', 'Public sector', 'Other'];
@@ -84,9 +91,8 @@ export default function App() {
 
   // Admin Auth & Data State
   const [adminUser, setAdminUser] = useState<User | null>(null);
-  const [adminEmail, setAdminEmail] = useState('');
-  const [adminPassword, setAdminPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
+  const [isRefreshingData, setIsRefreshingData] = useState(false);
   const [registrationsList, setRegistrationsList] = useState<Registration[]>([]);
   const [programmeDownloadsCount, setProgrammeDownloadsCount] = useState<number>(0);
   const [adminSearch, setAdminSearch] = useState('');
@@ -103,15 +109,50 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Track Auth State & Fetch Stats
+  // Track Auth State, Redirect Result & Fetch Stats
   useEffect(() => {
+    if (!isFirebaseConfigured) return;
+
     fetchStats();
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setAdminUser(user);
+
+    // Check redirect sign-in result (for popup fallback)
+    getRedirectResult(auth)
+      .then(async (result) => {
+        if (result?.user) {
+          if (!isAuthorizedAdminEmail(result.user.email)) {
+            const unauthorizedEmail = result.user.email || 'User';
+            await signOut(auth);
+            setAdminUser(null);
+            showError(`Not authorised: ${unauthorizedEmail} is not on the authorized admin list.`);
+          } else {
+            setAdminUser(result.user);
+            showToast(`Welcome Admin ${result.user.email}!`);
+            setActiveTab('admin');
+            fetchRegistrations();
+          }
+        }
+      })
+      .catch((err) => {
+        showError(mapFirebaseAuthError(err));
+      });
+
+    // Guard admin state: allow only emails on VITE_ADMIN_EMAILS whitelist
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
-        fetchRegistrations();
+        if (!isAuthorizedAdminEmail(user.email)) {
+          const unauthorizedEmail = user.email || 'User';
+          await signOut(auth);
+          setAdminUser(null);
+          showError(`Not authorised: ${unauthorizedEmail} is not on the authorized admin list.`);
+        } else {
+          setAdminUser(user);
+          fetchRegistrations();
+        }
+      } else {
+        setAdminUser(null);
       }
     });
+
     return () => unsubscribe();
   }, []);
 
@@ -122,28 +163,35 @@ export default function App() {
 
   const showError = (msg: string) => {
     setErrorMsg(msg);
-    setTimeout(() => setErrorMsg(null), 5000);
+    setTimeout(() => setErrorMsg(null), 6000);
   };
 
   const fetchStats = async () => {
+    if (!isFirebaseConfigured || !db) return;
     try {
       const docRef = doc(db, 'stats', 'programmeDownloads');
       const docSnap = await getDoc(docRef);
       if (docSnap.exists()) {
-        setProgrammeDownloadsCount(docSnap.data().count || 0);
+        const count = docSnap.data().count;
+        if (typeof count === 'number') {
+          setProgrammeDownloadsCount(count);
+        }
       }
-    } catch (err) {
-      console.error('Error fetching stats:', err);
+    } catch (err: any) {
+      // Gracefully handle network warming / offline state without loud errors
+      console.warn('Programme download stats currently unavailable:', err?.message || err);
     }
   };
 
   const handleDownloadProgramme = async () => {
-    try {
-      const statRef = doc(db, 'stats', 'programmeDownloads');
-      await setDoc(statRef, { count: increment(1) }, { merge: true });
-      setProgrammeDownloadsCount(prev => prev + 1);
-    } catch (err) {
-      console.error('Error incrementing download count:', err);
+    if (isFirebaseConfigured && db) {
+      try {
+        const statRef = doc(db, 'stats', 'programmeDownloads');
+        await setDoc(statRef, { count: increment(1) }, { merge: true });
+        setProgrammeDownloadsCount(prev => prev + 1);
+      } catch (err: any) {
+        console.warn('Could not record download stat:', err?.message || err);
+      }
     }
     const link = document.createElement('a');
     link.href = '/Gaborone-South-Youth-Symposium-Programme.pdf';
@@ -156,6 +204,8 @@ export default function App() {
 
   // Fetch Registrations for Admin
   const fetchRegistrations = async () => {
+    if (!isFirebaseConfigured) return;
+    setIsRefreshingData(true);
     try {
       const q = query(collection(db, 'registrations'));
       const snapshot = await getDocs(q);
@@ -163,37 +213,77 @@ export default function App() {
       snapshot.forEach((docSnap) => {
         list.push({ id: docSnap.id, ...docSnap.data() } as Registration);
       });
+      // Sort newest first if createdAt is available
+      list.sort((a, b) => {
+        const timeA = a.createdAt?.toMillis?.() || 0;
+        const timeB = b.createdAt?.toMillis?.() || 0;
+        return timeB - timeA;
+      });
       setRegistrationsList(list);
     } catch (err: any) {
-      console.error('Error fetching registrations:', err);
+      console.warn('Error fetching registrations:', err?.message || err);
+      showError(err?.message || 'Failed to fetch registrations from Firestore.');
+    } finally {
+      setIsRefreshingData(false);
     }
   };
 
-  // Handle Admin Login
-  const handleAdminLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Handle Admin Login with Google (Popup with Redirect Fallback)
+  const handleGoogleAdminLogin = async () => {
+    if (!isFirebaseConfigured) {
+      showError('Firebase configuration is not configured.');
+      return;
+    }
     setAuthLoading(true);
     setErrorMsg(null);
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+
     try {
-      await signInWithEmailAndPassword(auth, adminEmail, adminPassword);
-      showToast('Admin logged in successfully!');
+      const result = await signInWithPopup(auth, provider);
+      if (!isAuthorizedAdminEmail(result.user.email)) {
+        const unauthorizedEmail = result.user.email || 'User';
+        await signOut(auth);
+        setAdminUser(null);
+        showError(`Not authorised: ${unauthorizedEmail} is not on the authorized admin list.`);
+        return;
+      }
+      setAdminUser(result.user);
+      showToast(`Welcome Admin ${result.user.email || 'User'}!`);
       setActiveTab('admin');
       fetchRegistrations();
     } catch (err: any) {
-      showError(err.message || 'Failed to login. Please check credentials.');
+      // If popup was blocked by browser, automatically fall back to signInWithRedirect
+      if (err.code === 'auth/popup-blocked') {
+        showToast('Sign-in popup blocked by browser. Redirecting...');
+        try {
+          await signInWithRedirect(auth, provider);
+          return;
+        } catch (redirectErr) {
+          showError(mapFirebaseAuthError(redirectErr));
+          return;
+        }
+      }
+      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+        // User closed the popup window
+        return;
+      }
+      showError(mapFirebaseAuthError(err));
     } finally {
       setAuthLoading(false);
     }
   };
 
   const handleAdminLogout = async () => {
-    await signOut(auth);
+    if (auth) {
+      await signOut(auth);
+    }
     setAdminUser(null);
     setActiveTab('overview');
-    showToast('Logged out successfully.');
+    showToast('Signed out successfully.');
   };
 
-  // Handle Registration Submit
+  // Handle Registration Submit (Recognizable naming convention: REG-2026-[CATEGORY]-[PHONE])
   const handleRegistrationSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
@@ -222,16 +312,15 @@ export default function App() {
     setIsSubmitting(true);
 
     try {
-      // Check duplicate phone number in Firestore
-      const q = query(collection(db, 'registrations'), where('phone', '==', cleanPhone));
-      const existingQuery = await getDocs(q);
-      if (!existingQuery.empty) {
-        showError('A registration with this phone number already exists.');
-        setIsSubmitting(false);
-        return;
-      }
+      // Human-readable, recognizable document ID format (No random strings!):
+      // Example: REG-2026-INDIVIDUAL-26771234567
+      const phoneDigits = cleanPhone.replace(/\D/g, '');
+      const categoryTag = regType.toUpperCase();
+      let docId = `REG-2026-${categoryTag}-${phoneDigits}`;
 
       const payload: any = {
+        id: docId,
+        ticketNumber: docId,
         type: regType,
         phone: cleanPhone,
         email: formData.email.trim(),
@@ -254,10 +343,25 @@ export default function App() {
         payload.numberOfEmployees = Number(formData.numberOfEmployees) || 1;
       }
 
-      const docRef = await addDoc(collection(db, 'registrations'), payload);
-      const ticketNum = `GS-ECON-2026-${docRef.id.substring(0, 6).toUpperCase()}`;
-      setTicketResult(ticketNum);
-      showToast('Registration submitted successfully!');
+      // Save directly to Firestore with the recognizable document ID
+      try {
+        await setDoc(doc(db, 'registrations', docId), payload);
+      } catch (writeErr: any) {
+        // If the document already exists and updates without auth are restricted,
+        // create a unique recognizable sequence sub-id so the registration is never lost
+        if (writeErr.code === 'permission-denied') {
+          const timestampCode = Date.now().toString().slice(-4);
+          docId = `REG-2026-${categoryTag}-${phoneDigits}-${timestampCode}`;
+          payload.id = docId;
+          payload.ticketNumber = docId;
+          await setDoc(doc(db, 'registrations', docId), payload);
+        } else {
+          throw writeErr;
+        }
+      }
+
+      setTicketResult(docId);
+      showToast(`Registration saved to database successfully! Ref: ${docId}`);
       
       // Reset form
       setFormData({
@@ -277,8 +381,8 @@ export default function App() {
         consent: false
       });
     } catch (err: any) {
-      console.error('Registration Error:', err);
-      showError(err.message || 'Failed to submit registration. Please try again.');
+      console.warn('Registration Error:', err?.message || err);
+      showError(err?.message || 'Failed to submit registration. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -349,6 +453,51 @@ export default function App() {
   const organisationCount = registrationsList.filter(r => r.type === 'organisation').length;
   const totalCount = registrationsList.length;
 
+  if (!isFirebaseConfigured) {
+    return (
+      <div className="min-h-screen bg-[#EAF5FC] text-[#1F2328] flex items-center justify-center p-4 font-['Outfit'] antialiased">
+        <div className="max-w-xl w-full bg-white rounded-3xl border border-[#C9CCD1] p-6 sm:p-10 shadow-lg space-y-6">
+          <div className="text-center space-y-3">
+            <div className="w-16 h-16 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center mx-auto border border-red-200">
+              <AlertCircle className="w-8 h-8" />
+            </div>
+            <span className="text-xs font-bold text-red-700 bg-red-100/70 border border-red-200 px-3 py-1 rounded-full uppercase tracking-wider inline-block">
+              Configuration Missing
+            </span>
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1F2328]">
+              Firebase Setup Required
+            </h1>
+            <p className="text-xs sm:text-sm text-[#55565A] leading-relaxed">
+              This application reads Firebase configuration strictly from environment variables. The following required variables were not found:
+            </p>
+          </div>
+
+          <div className="bg-red-50/60 border border-red-200 rounded-2xl p-4 sm:p-5 space-y-2">
+            <div className="text-xs font-bold text-red-900 uppercase tracking-wider">Missing Variables:</div>
+            <ul className="space-y-1.5">
+              {missingFirebaseEnvVars.map(v => (
+                <li key={v} className="flex items-center space-x-2 text-xs font-mono font-bold text-red-700">
+                  <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                  <span>{v}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="space-y-3 bg-[#EAF5FC]/60 border border-[#C9CCD1] rounded-2xl p-4 sm:p-5 text-xs text-[#1F2328]">
+            <h2 className="font-bold text-sm text-[#1F2328]">How to resolve:</h2>
+            <ol className="list-decimal list-inside space-y-1.5 text-[#55565A]">
+              <li><strong>On Vercel:</strong> Open your project dashboard &gt; <strong>Settings &gt; Environment Variables</strong>.</li>
+              <li>Add the missing variables with values from Firebase Console (Project Settings &gt; General &gt; Your apps &gt; SDK setup).</li>
+              <li><strong>Local Development:</strong> Copy <code className="font-mono bg-white px-1.5 py-0.5 rounded border border-[#C9CCD1]">.env.example</code> to <code className="font-mono bg-white px-1.5 py-0.5 rounded border border-[#C9CCD1]">.env</code> and supply the values.</li>
+              <li>Redeploy your Vercel deployment or restart the dev server.</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#EAF5FC] text-[#1F2328] flex flex-col font-['Outfit'] antialiased">
       
@@ -362,9 +511,19 @@ export default function App() {
 
       {/* Error Banner */}
       {errorMsg && (
-        <div className="fixed top-16 right-4 sm:top-20 sm:right-5 z-50 bg-[#BA1A1A] text-white px-4 py-3 sm:px-6 sm:py-3 rounded-xl shadow-xl flex items-center space-x-3 border border-red-400 max-w-sm sm:max-w-md">
-          <AlertCircle className="w-5 h-5 sm:w-6 sm:h-6 shrink-0" />
-          <span className="font-medium text-xs sm:text-sm">{errorMsg}</span>
+        <div className="fixed top-16 right-4 sm:top-20 sm:right-5 z-50 bg-[#BA1A1A] text-white px-4 py-3 sm:px-5 sm:py-3 rounded-xl shadow-xl flex items-center justify-between gap-3 border border-red-400 max-w-sm sm:max-w-md animate-fade-in">
+          <div className="flex items-center space-x-2.5 min-w-0">
+            <AlertCircle className="w-5 h-5 shrink-0 text-white" />
+            <span className="font-medium text-xs sm:text-sm break-words">{errorMsg}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setErrorMsg(null)}
+            className="text-white/80 hover:text-white p-1 rounded-lg hover:bg-white/10 shrink-0 cursor-pointer"
+            aria-label="Dismiss error"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
@@ -798,11 +957,11 @@ export default function App() {
                     <CheckCircle2 className="w-10 h-10 text-[#2E6DA4]" />
                   </div>
                   <h3 className="text-xl sm:text-2xl font-bold text-[#1F2328]">Registration Successful!</h3>
-                  <p className="text-xs sm:text-sm text-[#55565A]">Your information has been securely saved to Firestore. Your official reference number is:</p>
-                  <div className="bg-white py-3 px-4 rounded-xl border border-[#72BEE7] text-lg sm:text-xl font-mono font-bold text-[#2E6DA4] shadow-2xs">
+                  <p className="text-xs sm:text-sm text-[#55565A]">Your registration has been successfully saved to the Firestore database under the recognizable document ID:</p>
+                  <div className="bg-white py-3 px-4 rounded-xl border border-[#72BEE7] text-base sm:text-xl font-mono font-bold text-[#2E6DA4] shadow-2xs select-all break-all">
                     {ticketResult}
                   </div>
-                  <p className="text-xs text-[#55565A]">Present this reference number on Friday, 6th November 2026 at Babusi Community Hall.</p>
+                  <p className="text-xs text-[#55565A]">Stored directly in database path <code className="bg-white/80 px-1.5 py-0.5 rounded text-[#2E6DA4] font-mono font-semibold border border-[#72BEE7]/40">registrations/{ticketResult}</code>. Please present this reference on Friday, 6th November 2026 at Babusi Community Hall.</p>
                   
                   <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
                     <button
@@ -1141,44 +1300,43 @@ export default function App() {
                   <div className="w-12 h-12 bg-[#EAF5FC] text-[#2E6DA4] rounded-xl flex items-center justify-center mx-auto border border-[#72BEE7]">
                     <Lock className="w-6 h-6 text-[#2E6DA4]" />
                   </div>
-                  <h3 className="text-2xl font-bold text-[#1F2328]">Admin Login</h3>
-                  <p className="text-xs text-[#55565A]">Sign in with your Firebase admin account to view live registrations and analytics.</p>
+                  <h3 className="text-2xl font-bold text-[#1F2328]">Admin Portal Login</h3>
+                  <p className="text-xs text-[#55565A] leading-relaxed">
+                    Sign in with your authorized administrator Google account to access registrations and analytics.
+                  </p>
                 </div>
 
-                <form onSubmit={handleAdminLogin} className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1F2328] mb-1">Admin Email</label>
-                    <input
-                      type="email"
-                      required
-                      inputMode="email"
-                      placeholder="admin@gaboronesouth.gov.bw"
-                      value={adminEmail}
-                      onChange={(e) => setAdminEmail(e.target.value)}
-                      className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1F2328] mb-1">Password</label>
-                    <input
-                      type="password"
-                      required
-                      placeholder="••••••••"
-                      value={adminPassword}
-                      onChange={(e) => setAdminPassword(e.target.value)}
-                      className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
-                    />
-                  </div>
-
+                {/* Google Sign-In */}
+                <div className="space-y-4 pt-1">
                   <button
-                    type="submit"
+                    type="button"
+                    onClick={handleGoogleAdminLogin}
                     disabled={authLoading}
-                    className="w-full py-3.5 bg-[#2E6DA4] hover:bg-[#245885] text-white font-bold rounded-xl shadow-sm transition cursor-pointer text-base min-h-[48px]"
+                    className="w-full py-3.5 px-4 bg-white hover:bg-[#EAF5FC] text-[#1F2328] font-bold rounded-xl border-2 border-[#C9CCD1] hover:border-[#2E6DA4] shadow-xs transition flex items-center justify-center gap-3 cursor-pointer min-h-[50px] disabled:opacity-60 disabled:cursor-not-allowed"
                   >
-                    {authLoading ? 'Signing in...' : 'Sign In to Dashboard'}
+                    {authLoading ? (
+                      <div className="flex items-center gap-2">
+                        <RefreshCw className="w-5 h-5 animate-spin text-[#2E6DA4]" />
+                        <span>Signing in...</span>
+                      </div>
+                    ) : (
+                      <>
+                        <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
+                          <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+                          <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.27 21.36 7.34 24 12 24z"/>
+                          <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+                          <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.34 0 3.27 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+                        </svg>
+                        <span>Continue with Google</span>
+                      </>
+                    )}
                   </button>
-                </form>
+
+                  <div className="flex items-center justify-center gap-1.5 text-xs text-[#55565A] text-center">
+                    <ShieldCheck className="w-4 h-4 text-[#2E6DA4] shrink-0" />
+                    <span>Restricted to authorized constituency administrators</span>
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="space-y-6 sm:space-y-8">
@@ -1188,11 +1346,20 @@ export default function App() {
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="bg-[#EAF5FC] text-[#2E6DA4] border border-[#72BEE7]/50 text-xs px-2.5 py-0.5 rounded-full font-bold">Authenticated Admin</span>
-                      <span className="text-xs text-[#55565A]">{adminUser.email}</span>
+                      <span className="text-xs text-[#55565A] font-medium">{adminUser.email}</span>
                     </div>
                     <h2 className="text-xl sm:text-2xl font-extrabold text-[#1F2328] mt-1">Economic Initiatives Registration Dashboard</h2>
                   </div>
                   <div className="flex flex-col xs:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+                    <button
+                      onClick={fetchRegistrations}
+                      disabled={isRefreshingData}
+                      className="w-full xs:w-auto bg-white hover:bg-[#EAF5FC] text-[#2E6DA4] border border-[#C9CCD1] font-semibold px-3.5 py-2.5 rounded-xl text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs transition-colors min-h-[44px]"
+                      title="Refresh registrations from Firestore"
+                    >
+                      <RefreshCw className={`w-4 h-4 ${isRefreshingData ? 'animate-spin' : ''}`} />
+                      <span>{isRefreshingData ? 'Refreshing...' : 'Refresh Records'}</span>
+                    </button>
                     <button
                       onClick={exportToCSV}
                       className="w-full xs:w-auto bg-[#2E6DA4] hover:bg-[#245885] text-white font-semibold px-4 py-2.5 rounded-xl text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors min-h-[44px]"
@@ -1423,7 +1590,7 @@ export default function App() {
                   ) : (
                     filteredRegistrations.map((r, idx) => (
                       <div key={r.id || idx} className="bg-white p-5 rounded-2xl border border-[#C9CCD1] shadow-xs space-y-3">
-                        <div className="flex items-center justify-between border-b border-[#C9CCD1]/60 pb-2">
+                        <div className="flex items-center justify-between border-b border-[#C9CCD1]/60 pb-2 gap-2 flex-wrap">
                           <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                             r.type === 'individual' ? 'bg-[#EAF5FC] text-[#2E6DA4] border border-[#72BEE7]/40' :
                             r.type === 'company' ? 'bg-[#2E6DA4]/10 text-[#2E6DA4] border border-[#2E6DA4]/30' :
@@ -1432,7 +1599,10 @@ export default function App() {
                           }`}>
                             {r.type}
                           </span>
-                          <span className="text-xs text-[#55565A] font-medium">{r.ward}</span>
+                          <span className="font-mono text-[10px] font-bold text-[#2E6DA4] bg-[#EAF5FC] px-2 py-0.5 rounded border border-[#72BEE7]/50">
+                            {r.id}
+                          </span>
+                          <span className="text-xs text-[#55565A] font-medium ml-auto">{r.ward}</span>
                         </div>
 
                         <div>
@@ -1488,6 +1658,7 @@ export default function App() {
                     <table className="w-full text-left text-xs">
                       <thead className="bg-[#EAF5FC] text-[#1F2328] border-b border-[#C9CCD1] uppercase font-bold">
                         <tr>
+                          <th className="p-4">Reference / Doc ID</th>
                           <th className="p-4">Type</th>
                           <th className="p-4">Name / Entity</th>
                           <th className="p-4">Contact / Phone</th>
@@ -1499,13 +1670,18 @@ export default function App() {
                       <tbody className="divide-y divide-[#C9CCD1]">
                         {filteredRegistrations.length === 0 ? (
                           <tr>
-                            <td colSpan={6} className="p-8 text-center text-[#55565A]">
+                            <td colSpan={7} className="p-8 text-center text-[#55565A]">
                               No registrations match the selected filters.
                             </td>
                           </tr>
                         ) : (
                           filteredRegistrations.map((r, idx) => (
                             <tr key={r.id || idx} className="hover:bg-[#EAF5FC]/50 transition-colors">
+                              <td className="p-4 font-mono font-bold text-xs text-[#2E6DA4] whitespace-nowrap">
+                                <span className="bg-[#EAF5FC] px-2.5 py-1 rounded-lg border border-[#72BEE7]/50 inline-block shadow-2xs">
+                                  {r.id}
+                                </span>
+                              </td>
                               <td className="p-4">
                                 <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                                   r.type === 'individual' ? 'bg-[#EAF5FC] text-[#2E6DA4] border border-[#72BEE7]/40' :
