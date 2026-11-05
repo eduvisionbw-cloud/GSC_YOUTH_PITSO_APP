@@ -3,14 +3,15 @@ import {
   Users, Award, Search, MapPin, 
   Clock, CheckCircle2, Download, Sparkles,
   Building2, ShieldCheck, LogOut, Lock, AlertCircle, Menu, X,
-  TrendingUp, Filter, RefreshCw, Landmark, Globe
+  TrendingUp, Filter, RefreshCw, Landmark, Globe,
+  Eye, Pencil, Trash2, Save
 } from 'lucide-react';
 import { 
   db, auth, isFirebaseConfigured, mapFirebaseAuthError 
 } from './firebase';
 import { 
   collection, addDoc, onSnapshot, serverTimestamp,
-  doc, setDoc, increment, getDoc
+  doc, setDoc, increment, getDoc, getDocs, updateDoc, deleteDoc
 } from 'firebase/firestore';
 import { 
   signOut, onAuthStateChanged, User,
@@ -99,6 +100,14 @@ export default function App() {
   const [filterWard, setFilterWard] = useState<string>('all');
   const [filterSector, setFilterSector] = useState<string>('all');
 
+  // Controls for Registered Users Table (View, Edit, Delete modals)
+  const [viewingReg, setViewingReg] = useState<Registration | null>(null);
+  const [editingReg, setEditingReg] = useState<Registration | null>(null);
+  const [editFormData, setEditFormData] = useState<Partial<Registration>>({});
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [deletingReg, setDeletingReg] = useState<Registration | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
   // Auto-advance hero slideshow every 5 seconds
   useEffect(() => {
     const timer = setInterval(() => {
@@ -145,12 +154,39 @@ export default function App() {
     };
   }, []);
 
+  // Function to manually or fallback fetch registrations
+  const fetchRegistrations = async () => {
+    if (!adminUser || !isFirebaseConfigured) return;
+    setIsRefreshingData(true);
+    try {
+      const querySnap = await getDocs(collection(db, 'registrations'));
+      const list: Registration[] = [];
+      querySnap.forEach((docSnap) => {
+        list.push({ id: docSnap.id, ...docSnap.data() } as Registration);
+      });
+      list.sort((a, b) => {
+        const timeA = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : (a.createdAt?.toMillis?.() || 0);
+        const timeB = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : (b.createdAt?.toMillis?.() || 0);
+        return timeB - timeA;
+      });
+      setRegistrationsList(list);
+    } catch (err: any) {
+      console.error('Fetch registrations error:', err);
+      showError('Failed to retrieve registrations: ' + (err?.message || 'Access denied'));
+    } finally {
+      setIsRefreshingData(false);
+    }
+  };
+
   // Live snapshot listener for registrations when admin is authenticated
   useEffect(() => {
     if (!adminUser || !isFirebaseConfigured) return;
 
     setIsRefreshingData(true);
+    let isSubscribed = true;
+
     const unsubRegs = onSnapshot(collection(db, 'registrations'), (snapshot) => {
+      if (!isSubscribed) return;
       const list: Registration[] = [];
       snapshot.forEach((docSnap) => {
         list.push({ id: docSnap.id, ...docSnap.data() } as Registration);
@@ -163,45 +199,64 @@ export default function App() {
       });
       setRegistrationsList(list);
       setIsRefreshingData(false);
-    }, (err) => {
+    }, async (err) => {
       console.error('Registrations snapshot error:', err);
-      showError('Failed to stream live registrations from database.');
+      // Attempt getDocs as a direct fallback in case WebChannel was blocked
+      try {
+        await fetchRegistrations();
+      } catch (fetchErr) {
+        console.error('Fallback fetch also failed:', fetchErr);
+        showError('Failed to stream live registrations from database.');
+      }
       setIsRefreshingData(false);
     });
 
-    return () => unsubRegs();
+    return () => {
+      isSubscribed = false;
+      unsubRegs();
+    };
   }, [adminUser]);
 
-  // Helper to verify if the authenticated user has a document in 'admins'
+  // Helper to verify if the authenticated user has admin access
   const verifyAdminAccess = async (user: User) => {
     const userEmail = user.email ? user.email.toLowerCase() : '';
     if (!userEmail) {
       await signOut(auth);
       setAdminUser(null);
-      showError('Not authorised');
+      showError('Not authorised. No email associated with this account.');
       return;
     }
 
     try {
+      const defaultAdmins = ['gibsonmatenge@gmail.com', 'gsetlamelo@gmail.com', 'quintonbileon@gmail.com'];
       const envAdmins = (import.meta.env.VITE_ADMIN_EMAILS || '')
         .split(',')
         .map((e: string) => e.trim().toLowerCase())
         .filter(Boolean);
-      const isEnvAdmin = envAdmins.includes(userEmail);
+      const isAuthorized = defaultAdmins.includes(userEmail) || envAdmins.includes(userEmail);
 
       let isAdminDoc = false;
       try {
         const adminDocRef = doc(db, 'admins', userEmail);
         const adminSnap = await getDoc(adminDocRef);
         isAdminDoc = adminSnap.exists();
+        // Auto-seed admin document if recognized admin doesn't have one in Firestore yet
+        if (!isAdminDoc && isAuthorized) {
+          await setDoc(adminDocRef, {
+            email: userEmail,
+            role: 'superadmin',
+            createdAt: new Date().toISOString()
+          }, { merge: true }).catch((err) => console.warn('Auto-seed admin doc skipped:', err));
+          isAdminDoc = true;
+        }
       } catch (e) {
         console.warn('Admin doc check skipped or offline:', e);
       }
 
-      if (!isAdminDoc && !isEnvAdmin) {
+      if (!isAdminDoc && !isAuthorized) {
         await signOut(auth);
         setAdminUser(null);
-        showError('Not authorised');
+        showError('Not authorised. Email is not in the administrator whitelist.');
         return;
       }
       setAdminUser(user);
@@ -304,6 +359,119 @@ export default function App() {
     setAdminUser(null);
     setActiveTab('overview');
     showToast('Signed out successfully.');
+  };
+
+  // Open View Details Modal
+  const handleOpenView = (reg: Registration) => {
+    setViewingReg(reg);
+  };
+
+  // Open Edit Details Modal
+  const handleOpenEdit = (reg: Registration) => {
+    setEditingReg(reg);
+    setEditFormData({
+      type: reg.type,
+      fullName: reg.fullName || '',
+      idNumber: reg.idNumber || '',
+      companyName: reg.companyName || '',
+      contactPerson: reg.contactPerson || '',
+      phone: reg.phone || '',
+      email: reg.email || '',
+      ward: reg.ward || 'Babusi',
+      plotNumber: reg.plotNumber || '',
+      profession: reg.profession || '',
+      sector: reg.sector || 'Services',
+      skillsOrServices: reg.skillsOrServices || '',
+      employeeCount: reg.employeeCount ?? 1
+    });
+  };
+
+  // Save Edit Handler
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingReg?.id) return;
+
+    if (!editFormData.phone || editFormData.phone.trim().length < 7) {
+      showError('Please provide a valid phone number (at least 7 characters).');
+      return;
+    }
+
+    setIsSavingEdit(true);
+    try {
+      const regDocRef = doc(db, 'registrations', editingReg.id);
+      const updateData: Record<string, any> = {
+        type: editFormData.type || editingReg.type,
+        phone: editFormData.phone.trim(),
+        email: editFormData.email?.trim() || '',
+        ward: editFormData.ward || 'Babusi',
+        plotNumber: editFormData.plotNumber?.trim() || '',
+        sector: editFormData.sector || 'Services',
+        skillsOrServices: editFormData.skillsOrServices?.trim() || '',
+        updatedAt: serverTimestamp()
+      };
+
+      if (editFormData.type === 'individual') {
+        updateData.fullName = editFormData.fullName?.trim() || '';
+        updateData.idNumber = editFormData.idNumber?.trim() || '';
+        updateData.profession = editFormData.profession?.trim() || '';
+      } else {
+        updateData.companyName = editFormData.companyName?.trim() || '';
+        updateData.contactPerson = editFormData.contactPerson?.trim() || '';
+        updateData.employeeCount = Number(editFormData.employeeCount) || 1;
+      }
+
+      await updateDoc(regDocRef, updateData);
+
+      // Optimistically update local state
+      setRegistrationsList(prev => prev.map(item => {
+        if (item.id === editingReg.id) {
+          return {
+            ...item,
+            ...updateData
+          } as Registration;
+        }
+        return item;
+      }));
+
+      // Update viewing modal if open
+      if (viewingReg?.id === editingReg.id) {
+        setViewingReg(prev => prev ? ({ ...prev, ...updateData } as Registration) : null);
+      }
+
+      showToast(`Registration for ${editingReg.id} updated successfully!`);
+      setEditingReg(null);
+    } catch (err: any) {
+      console.error('Update error:', err);
+      showError('Failed to update registration: ' + (err?.message || 'Permission denied'));
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  // Confirm Delete Handler
+  const handleConfirmDelete = async () => {
+    if (!deletingReg?.id) return;
+
+    setIsDeleting(true);
+    try {
+      const regDocRef = doc(db, 'registrations', deletingReg.id);
+      await deleteDoc(regDocRef);
+
+      // Remove from local state
+      setRegistrationsList(prev => prev.filter(item => item.id !== deletingReg.id));
+
+      if (viewingReg?.id === deletingReg.id) {
+        setViewingReg(null);
+      }
+
+      showToast(`Registration ${deletingReg.id} deleted successfully.`);
+      setDeletingReg(null);
+    } catch (err: any) {
+      console.error('Delete error:', err);
+      showError('Failed to delete registration: ' + (err?.message || 'Permission denied'));
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   // Handle Public Registration Submit
@@ -1328,6 +1496,16 @@ export default function App() {
                       </select>
 
                       <button
+                        onClick={fetchRegistrations}
+                        disabled={isRefreshingData}
+                        className="bg-white hover:bg-[#EAF5FC] text-[#2E6DA4] border border-[#72BEE7]/60 px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer min-h-[40px] shadow-2xs disabled:opacity-60"
+                        title="Refresh registrations from database"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingData ? 'animate-spin' : ''}`} />
+                        <span>Refresh</span>
+                      </button>
+
+                      <button
                         onClick={exportToCSV}
                         className="bg-[#2E6DA4] hover:bg-[#245885] text-white px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer min-h-[40px] shadow-2xs"
                       >
@@ -1345,10 +1523,10 @@ export default function App() {
                           <th className="p-3">Doc ID</th>
                           <th className="p-3">Category</th>
                           <th className="p-3">Name / Entity</th>
-                          <th className="p-3">Contact Person</th>
+                          <th className="p-3">Contact</th>
                           <th className="p-3">Ward</th>
                           <th className="p-3">Profession / Sector</th>
-                          <th className="p-3">Skills / Services</th>
+                          <th className="p-3 text-center w-28">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#C9CCD1]">
@@ -1387,13 +1565,37 @@ export default function App() {
                               </td>
                               <td className="p-3 space-y-0.5">
                                 <div className="font-medium text-[#1F2328]">
-                                  {r.type === 'individual' ? r.phone : (r.contactPerson || r.phone)}
+                                  {r.type === 'individual' ? r.phone : (r.contactPerson ? `${r.contactPerson} (${r.phone})` : r.phone)}
                                 </div>
                                 <div className="text-[10px] text-[#55565A]">{r.email}</div>
                               </td>
                               <td className="p-3">{r.ward}</td>
                               <td className="p-3">{r.type === 'individual' ? r.profession : r.sector}</td>
-                              <td className="p-3 text-[#55565A]">{r.skillsOrServices || '-'}</td>
+                              <td className="p-3 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    onClick={() => handleOpenView(r)}
+                                    className="p-1.5 rounded-lg text-[#2E6DA4] bg-white hover:bg-[#EAF5FC] border border-[#72BEE7]/60 transition cursor-pointer shadow-2xs"
+                                    title="View Details"
+                                  >
+                                    <Eye className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleOpenEdit(r)}
+                                    className="p-1.5 rounded-lg text-amber-700 bg-white hover:bg-amber-50 border border-amber-300 transition cursor-pointer shadow-2xs"
+                                    title="Edit Registration"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => setDeletingReg(r)}
+                                    className="p-1.5 rounded-lg text-red-600 bg-white hover:bg-red-50 border border-red-300 transition cursor-pointer shadow-2xs"
+                                    title="Delete Registration"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
                             </tr>
                           ))
                         )}
@@ -1401,6 +1603,442 @@ export default function App() {
                     </table>
                   </div>
                 </div>
+
+                {/* ================= VIEW MODAL ================= */}
+                {viewingReg && (
+                  <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+                    <div className="bg-white rounded-2xl max-w-2xl w-full border border-[#C9CCD1] shadow-2xl overflow-hidden animate-fade-in my-8">
+                      {/* Modal Header */}
+                      <div className="bg-[#EAF5FC] p-5 border-b border-[#C9CCD1] flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase border ${
+                            viewingReg.type === 'individual' 
+                              ? 'bg-sky-50 text-sky-700 border-sky-300' 
+                              : viewingReg.type === 'company' 
+                              ? 'bg-blue-50 text-blue-700 border-blue-300' 
+                              : viewingReg.type === 'institution'
+                              ? 'bg-purple-50 text-purple-700 border-purple-300'
+                              : 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                          }`}>
+                            {viewingReg.type}
+                          </span>
+                          <span className="font-mono text-xs font-bold text-[#2E6DA4] bg-white px-2.5 py-1 rounded-md border border-[#72BEE7]/60">
+                            {viewingReg.id}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => setViewingReg(null)}
+                          className="p-1.5 text-[#55565A] hover:text-[#1F2328] hover:bg-white rounded-lg transition cursor-pointer"
+                        >
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+
+                      {/* Modal Body */}
+                      <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
+                        <div>
+                          <h3 className="text-xl font-black text-[#1F2328]">
+                            {viewingReg.type === 'individual' ? viewingReg.fullName : viewingReg.companyName}
+                          </h3>
+                          {viewingReg.idNumber && (
+                            <p className="text-xs font-mono text-[#55565A] mt-0.5">
+                              National ID / Passport: <span className="font-bold text-[#1F2328]">{viewingReg.idNumber}</span>
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                          <div className="bg-slate-50 p-3.5 rounded-xl border border-[#C9CCD1]/70 space-y-1">
+                            <span className="text-[#55565A] font-semibold uppercase text-[10px] tracking-wider">Contact Person</span>
+                            <div className="font-bold text-[#1F2328] text-sm">
+                              {viewingReg.type === 'individual' ? viewingReg.fullName : (viewingReg.contactPerson || '-')}
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 p-3.5 rounded-xl border border-[#C9CCD1]/70 space-y-1">
+                            <span className="text-[#55565A] font-semibold uppercase text-[10px] tracking-wider">Phone Number</span>
+                            <div className="font-bold text-[#2E6DA4] text-sm">
+                              <a href={`tel:${viewingReg.phone}`} className="hover:underline flex items-center gap-1.5">
+                                {viewingReg.phone}
+                              </a>
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 p-3.5 rounded-xl border border-[#C9CCD1]/70 space-y-1">
+                            <span className="text-[#55565A] font-semibold uppercase text-[10px] tracking-wider">Email Address</span>
+                            <div className="font-bold text-[#2E6DA4] text-sm break-all">
+                              <a href={`mailto:${viewingReg.email}`} className="hover:underline">
+                                {viewingReg.email}
+                              </a>
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 p-3.5 rounded-xl border border-[#C9CCD1]/70 space-y-1">
+                            <span className="text-[#55565A] font-semibold uppercase text-[10px] tracking-wider">Constituency Ward</span>
+                            <div className="font-bold text-[#1F2328] text-sm flex items-center gap-1.5">
+                              <MapPin className="w-4 h-4 text-[#2E6DA4]" />
+                              <span>{viewingReg.ward}</span>
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 p-3.5 rounded-xl border border-[#C9CCD1]/70 space-y-1">
+                            <span className="text-[#55565A] font-semibold uppercase text-[10px] tracking-wider">Plot / Physical Address</span>
+                            <div className="font-bold text-[#1F2328] text-sm">
+                              {viewingReg.plotNumber || 'Not specified'}
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 p-3.5 rounded-xl border border-[#C9CCD1]/70 space-y-1">
+                            <span className="text-[#55565A] font-semibold uppercase text-[10px] tracking-wider">
+                              {viewingReg.type === 'individual' ? 'Profession / Trade' : 'Economic Sector'}
+                            </span>
+                            <div className="font-bold text-[#1F2328] text-sm">
+                              {viewingReg.type === 'individual' ? (viewingReg.profession || viewingReg.sector) : viewingReg.sector}
+                            </div>
+                          </div>
+
+                          {viewingReg.type !== 'individual' && (
+                            <div className="bg-slate-50 p-3.5 rounded-xl border border-[#C9CCD1]/70 space-y-1 sm:col-span-2">
+                              <span className="text-[#55565A] font-semibold uppercase text-[10px] tracking-wider">Number of Employees</span>
+                              <div className="font-bold text-[#1F2328] text-sm">
+                                {viewingReg.employeeCount ?? 1} staff
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Skills / Offerings Section */}
+                        <div className="bg-[#EAF5FC]/50 p-4 rounded-xl border border-[#72BEE7]/40 space-y-1.5">
+                          <span className="text-[#2E6DA4] font-bold text-xs uppercase tracking-wider">
+                            Skills, Offerings & Business Description
+                          </span>
+                          <p className="text-xs text-[#1F2328] whitespace-pre-wrap leading-relaxed">
+                            {viewingReg.skillsOrServices || 'No description provided.'}
+                          </p>
+                        </div>
+
+                        {/* Metadata Footer */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-[11px] text-[#55565A] border-t border-[#C9CCD1]">
+                          <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Consent terms accepted</span>
+                          </div>
+                          <div>
+                            {viewingReg.createdAt && (
+                              <span>
+                                Registered: {viewingReg.createdAt?.seconds ? new Date(viewingReg.createdAt.seconds * 1000).toLocaleString() : 'Recent'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Modal Footer Controls */}
+                      <div className="bg-slate-50 p-4 border-t border-[#C9CCD1] flex items-center justify-between gap-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = viewingReg;
+                            setViewingReg(null);
+                            handleOpenEdit(target);
+                          }}
+                          className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                          <span>Edit Details</span>
+                        </button>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const target = viewingReg;
+                              setViewingReg(null);
+                              setDeletingReg(target);
+                            }}
+                            className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Delete Entry</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setViewingReg(null)}
+                            className="px-4 py-2 bg-white hover:bg-slate-100 text-[#1F2328] border border-[#C9CCD1] rounded-xl text-xs font-bold transition cursor-pointer"
+                          >
+                            Close
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ================= EDIT MODAL ================= */}
+                {editingReg && (
+                  <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+                    <div className="bg-white rounded-2xl max-w-2xl w-full border border-[#C9CCD1] shadow-2xl overflow-hidden animate-fade-in my-8">
+                      {/* Modal Header */}
+                      <div className="bg-[#EAF5FC] p-5 border-b border-[#C9CCD1] flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <Pencil className="w-5 h-5 text-[#2E6DA4]" />
+                          <div>
+                            <h3 className="text-base font-bold text-[#1F2328]">Edit Registration</h3>
+                            <p className="text-xs font-mono text-[#55565A]">Doc ID: {editingReg.id}</p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => setEditingReg(null)}
+                          className="p-1.5 text-[#55565A] hover:text-[#1F2328] hover:bg-white rounded-lg transition cursor-pointer"
+                        >
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+
+                      {/* Modal Form */}
+                      <form onSubmit={handleSaveEdit}>
+                        <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+                          {/* Category Selection */}
+                          <div>
+                            <label className="block text-xs font-bold text-[#1F2328] mb-1">Registration Category</label>
+                            <select
+                              value={editFormData.type || 'individual'}
+                              onChange={(e) => setEditFormData(prev => ({ ...prev, type: e.target.value as RegistrationType }))}
+                              className="w-full px-3.5 py-2.5 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30"
+                            >
+                              <option value="individual">Individual</option>
+                              <option value="company">Company</option>
+                              <option value="institution">Institution</option>
+                              <option value="organisation">Organisation</option>
+                            </select>
+                          </div>
+
+                          {/* Dynamic Fields by Type */}
+                          {editFormData.type === 'individual' ? (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                              <div className="sm:col-span-2">
+                                <label className="block text-xs font-semibold text-[#1F2328] mb-1">Full Name</label>
+                                <input
+                                  type="text"
+                                  required
+                                  value={editFormData.fullName || ''}
+                                  onChange={(e) => setEditFormData(prev => ({ ...prev, fullName: e.target.value }))}
+                                  className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs text-[#1F2328] focus:border-[#2E6DA4]"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-[#1F2328] mb-1">ID Number (Omang / Passport)</label>
+                                <input
+                                  type="text"
+                                  value={editFormData.idNumber || ''}
+                                  onChange={(e) => setEditFormData(prev => ({ ...prev, idNumber: e.target.value }))}
+                                  className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs text-[#1F2328] focus:border-[#2E6DA4]"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-[#1F2328] mb-1">Profession / Trade</label>
+                                <input
+                                  type="text"
+                                  value={editFormData.profession || ''}
+                                  onChange={(e) => setEditFormData(prev => ({ ...prev, profession: e.target.value }))}
+                                  className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs text-[#1F2328] focus:border-[#2E6DA4]"
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                              <div className="sm:col-span-2">
+                                <label className="block text-xs font-semibold text-[#1F2328] mb-1">
+                                  {editFormData.type === 'company' ? 'Company Name' : editFormData.type === 'institution' ? 'Institution Name' : 'Organisation Name'}
+                                </label>
+                                <input
+                                  type="text"
+                                  required
+                                  value={editFormData.companyName || ''}
+                                  onChange={(e) => setEditFormData(prev => ({ ...prev, companyName: e.target.value }))}
+                                  className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs text-[#1F2328] focus:border-[#2E6DA4]"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-[#1F2328] mb-1">Contact Person</label>
+                                <input
+                                  type="text"
+                                  value={editFormData.contactPerson || ''}
+                                  onChange={(e) => setEditFormData(prev => ({ ...prev, contactPerson: e.target.value }))}
+                                  className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs text-[#1F2328] focus:border-[#2E6DA4]"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-[#1F2328] mb-1">Number of Employees</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={editFormData.employeeCount ?? 1}
+                                  onChange={(e) => setEditFormData(prev => ({ ...prev, employeeCount: Number(e.target.value) }))}
+                                  className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs text-[#1F2328] focus:border-[#2E6DA4]"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Contact Details */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                            <div>
+                              <label className="block text-xs font-semibold text-[#1F2328] mb-1">Phone Number *</label>
+                              <input
+                                type="tel"
+                                required
+                                value={editFormData.phone || ''}
+                                onChange={(e) => setEditFormData(prev => ({ ...prev, phone: e.target.value }))}
+                                className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs text-[#1F2328] focus:border-[#2E6DA4]"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold text-[#1F2328] mb-1">Email Address</label>
+                              <input
+                                type="email"
+                                value={editFormData.email || ''}
+                                onChange={(e) => setEditFormData(prev => ({ ...prev, email: e.target.value }))}
+                                className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs text-[#1F2328] focus:border-[#2E6DA4]"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Ward & Address */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                            <div>
+                              <label className="block text-xs font-semibold text-[#1F2328] mb-1">Constituency Ward *</label>
+                              <select
+                                value={editFormData.ward || 'Babusi'}
+                                onChange={(e) => setEditFormData(prev => ({ ...prev, ward: e.target.value }))}
+                                className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] focus:border-[#2E6DA4]"
+                              >
+                                {WARDS.map(w => <option key={w} value={w}>{w}</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold text-[#1F2328] mb-1">Plot / Physical Address</label>
+                              <input
+                                type="text"
+                                value={editFormData.plotNumber || ''}
+                                onChange={(e) => setEditFormData(prev => ({ ...prev, plotNumber: e.target.value }))}
+                                className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs text-[#1F2328] focus:border-[#2E6DA4]"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Sector */}
+                          <div>
+                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">Economic Sector</label>
+                            <select
+                              value={editFormData.sector || 'Services'}
+                              onChange={(e) => setEditFormData(prev => ({ ...prev, sector: e.target.value }))}
+                              className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] focus:border-[#2E6DA4]"
+                            >
+                              {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                          </div>
+
+                          {/* Skills / Services */}
+                          <div>
+                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">Skills, Offerings & Products</label>
+                            <textarea
+                              rows={3}
+                              value={editFormData.skillsOrServices || ''}
+                              onChange={(e) => setEditFormData(prev => ({ ...prev, skillsOrServices: e.target.value }))}
+                              className="w-full px-3.5 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs text-[#1F2328] focus:border-[#2E6DA4]"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Modal Footer */}
+                        <div className="bg-slate-50 p-4 border-t border-[#C9CCD1] flex items-center justify-end gap-2.5">
+                          <button
+                            type="button"
+                            onClick={() => setEditingReg(null)}
+                            disabled={isSavingEdit}
+                            className="px-4 py-2 bg-white hover:bg-slate-100 text-[#1F2328] border border-[#C9CCD1] rounded-xl text-xs font-bold transition cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={isSavingEdit}
+                            className="px-5 py-2 bg-[#2E6DA4] hover:bg-[#245885] text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-60"
+                          >
+                            {isSavingEdit ? (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                <span>Saving...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Save className="w-3.5 h-3.5" />
+                                <span>Save Changes</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                )}
+
+                {/* ================= DELETE CONFIRMATION MODAL ================= */}
+                {deletingReg && (
+                  <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl max-w-md w-full border border-red-200 shadow-2xl p-6 space-y-4 animate-fade-in">
+                      <div className="w-12 h-12 rounded-xl bg-red-50 border border-red-200 text-red-600 flex items-center justify-center mx-auto">
+                        <Trash2 className="w-6 h-6" />
+                      </div>
+
+                      <div className="text-center space-y-2">
+                        <h3 className="text-lg font-bold text-[#1F2328]">Delete Registration?</h3>
+                        <p className="text-xs text-[#55565A] leading-relaxed">
+                          Are you sure you want to permanently delete the registration for{' '}
+                          <span className="font-bold text-[#1F2328]">
+                            {deletingReg.type === 'individual' ? deletingReg.fullName : deletingReg.companyName}
+                          </span>?
+                        </p>
+                        <div className="inline-block bg-slate-50 border border-[#C9CCD1] rounded-md px-2.5 py-1 text-[11px] font-mono text-[#2E6DA4]">
+                          ID: {deletingReg.id} ({deletingReg.type})
+                        </div>
+                        <p className="text-[11px] text-red-600 font-semibold pt-1">
+                          This record will be removed from Firestore and this action cannot be undone.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center justify-center gap-3 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setDeletingReg(null)}
+                          disabled={isDeleting}
+                          className="flex-1 py-2.5 bg-white hover:bg-slate-100 text-[#1F2328] border border-[#C9CCD1] rounded-xl text-xs font-bold transition cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleConfirmDelete}
+                          disabled={isDeleting}
+                          className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-60"
+                        >
+                          {isDeleting ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <span>Deleting...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Confirm Delete</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
               </div>
             )}

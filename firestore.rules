@@ -2,11 +2,18 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper function to check if the user's email exists in the admins collection
+    // Helper function to check if the user's email is an authorized admin
     function isAdmin() {
       return request.auth != null 
         && request.auth.token.email != null 
-        && exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()));
+        && (
+          request.auth.token.email.lower() in [
+            'gibsonmatenge@gmail.com',
+            'gsetlamelo@gmail.com',
+            'quintonbileon@gmail.com'
+          ]
+          || exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()))
+        );
     }
 
     // Helper function to validate public registration payload
@@ -24,7 +31,7 @@ service cloud.firestore {
 
     // 1. Registrations collection
     match /registrations/{registrationId} {
-      // Public create only if type is individual or company, phone is 7-25 chars, ward is string, consentGiven is true
+      // Public create only if payload is valid
       allow create: if isValidRegistration(request.resource.data);
 
       // Read, update, and delete only for admins
@@ -46,15 +53,15 @@ service cloud.firestore {
 
     // 3. Admins collection
     match /admins/{adminEmail} {
-      // Readable only by the signed-in user's own email or listing by admins
+      // Readable by the signed-in user's own email or listing by admins
       allow get: if request.auth != null 
         && request.auth.token.email != null 
-        && request.auth.token.email.lower() == adminEmail.lower();
+        && (request.auth.token.email.lower() == adminEmail.lower() || isAdmin());
 
       allow list: if isAdmin();
 
-      // No client writes
-      allow write: if false;
+      // Allow admins to write to admins collection (e.g., seeding admin documents)
+      allow write: if isAdmin();
     }
   }
 }
