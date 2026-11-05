@@ -1,46 +1,43 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Users, Award, BookOpen, Search, MapPin, 
-  Clock, CheckCircle2, Sparkles, Download, 
+  Users, Award, Search, MapPin, 
+  Clock, CheckCircle2, Download, Sparkles,
   Building2, ShieldCheck, LogOut, Lock, AlertCircle, Menu, X,
-  TrendingUp, ChevronLeft, ChevronRight, Filter, SlidersHorizontal,
-  RefreshCw
+  TrendingUp, Filter, RefreshCw
 } from 'lucide-react';
 import { 
-  db, auth, isFirebaseConfigured, missingFirebaseEnvVars,
-  mapFirebaseAuthError, isAuthorizedAdminEmail, getAdminEmails
+  db, auth, isFirebaseConfigured, mapFirebaseAuthError 
 } from './firebase';
 import { 
-  collection, addDoc, getDocs, query, where, serverTimestamp,
-  doc, getDoc, setDoc, increment
+  collection, addDoc, onSnapshot, serverTimestamp,
+  doc, setDoc, increment, getDoc
 } from 'firebase/firestore';
 import { 
   signOut, onAuthStateChanged, User,
-  GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult
+  GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult,
+  signInWithEmailAndPassword
 } from 'firebase/auth';
 
 const WARDS = ['Babusi', 'Boitshoko', 'Bontleng', 'Dilalelo', 'Mophato', 'Old Industrial', 'Old Naledi', 'Selemela', 'Village', 'White City', 'Other'];
 const SECTORS = ['Services', 'Retail', 'Wholesale', 'Education', 'Construction', 'Manufacturing', 'Mining', 'Agriculture', 'ICT', 'Public sector', 'Other'];
 
-type RegistrationType = 'individual' | 'company' | 'institution' | 'organisation';
+type RegistrationType = 'individual' | 'company';
 
 interface Registration {
   id?: string;
   type: RegistrationType;
-  name?: string;
+  fullName?: string;
   companyName?: string;
   contactPerson?: string;
   phone: string;
   email: string;
   ward: string;
   plotNumber?: string;
-  idNumber?: string;
   profession?: string;
   sector?: string;
-  skills?: string;
-  goodsAndServices?: string;
-  numberOfEmployees?: number;
-  consent: boolean;
+  skillsOrServices?: string;
+  employeeCount?: number;
+  consentGiven: boolean;
   createdAt: any;
 }
 
@@ -71,26 +68,26 @@ export default function App() {
   // Registration Form State
   const [regType, setRegType] = useState<RegistrationType>('individual');
   const [formData, setFormData] = useState({
-    name: '',
+    fullName: '',
     companyName: '',
     contactPerson: '',
     phone: '+267',
     email: '',
     ward: 'Babusi',
     plotNumber: '',
-    idNumber: '',
     profession: '',
     sector: 'Services',
-    skills: '',
-    goodsAndServices: '',
-    numberOfEmployees: 1,
-    consent: false
+    skillsOrServices: '',
+    employeeCount: 1,
+    consentGiven: false
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [ticketResult, setTicketResult] = useState<string | null>(null);
 
   // Admin Auth & Data State
   const [adminUser, setAdminUser] = useState<User | null>(null);
+  const [adminEmailInput, setAdminEmailInput] = useState('');
+  const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [isRefreshingData, setIsRefreshingData] = useState(false);
   const [registrationsList, setRegistrationsList] = useState<Registration[]>([]);
@@ -99,9 +96,8 @@ export default function App() {
   const [filterType, setFilterType] = useState<string>('all');
   const [filterWard, setFilterWard] = useState<string>('all');
   const [filterSector, setFilterSector] = useState<string>('all');
-  const [showFiltersMobile, setShowFiltersMobile] = useState(false);
 
-  // Auto-advance slideshow every 5 seconds
+  // Auto-advance hero slideshow every 5 seconds
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentHeroSlide((prev) => (prev + 1) % HERO_SLIDES.length);
@@ -109,52 +105,100 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Track Auth State, Redirect Result & Fetch Stats
+  // Track Auth State & Live Programme Download Stats
   useEffect(() => {
     if (!isFirebaseConfigured) return;
 
-    fetchStats();
+    // Live listener for programmeStats/downloads
+    const unsubStats = onSnapshot(doc(db, 'programmeStats', 'downloads'), (snap) => {
+      if (snap.exists() && typeof snap.data()?.count === 'number') {
+        setProgrammeDownloadsCount(snap.data()!.count);
+      }
+    }, (err) => console.error('Stats snapshot error:', err));
 
-    // Check redirect sign-in result (for popup fallback)
+    // Handle Google redirect sign-in result
     getRedirectResult(auth)
       .then(async (result) => {
         if (result?.user) {
-          if (!isAuthorizedAdminEmail(result.user.email)) {
-            const unauthorizedEmail = result.user.email || 'User';
-            await signOut(auth);
-            setAdminUser(null);
-            showError(`Not authorised: ${unauthorizedEmail} is not on the authorized admin list.`);
-          } else {
-            setAdminUser(result.user);
-            showToast(`Welcome Admin ${result.user.email}!`);
-            setActiveTab('admin');
-            fetchRegistrations();
-          }
+          await verifyAdminAccess(result.user);
         }
       })
       .catch((err) => {
+        console.error('Redirect sign-in error:', err);
         showError(mapFirebaseAuthError(err));
       });
 
-    // Guard admin state: allow only emails on VITE_ADMIN_EMAILS whitelist
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    // Auth state observer
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       if (user) {
-        if (!isAuthorizedAdminEmail(user.email)) {
-          const unauthorizedEmail = user.email || 'User';
-          await signOut(auth);
-          setAdminUser(null);
-          showError(`Not authorised: ${unauthorizedEmail} is not on the authorized admin list.`);
-        } else {
-          setAdminUser(user);
-          fetchRegistrations();
-        }
+        await verifyAdminAccess(user);
       } else {
         setAdminUser(null);
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubStats();
+      unsubscribeAuth();
+    };
   }, []);
+
+  // Live snapshot listener for registrations when admin is authenticated
+  useEffect(() => {
+    if (!adminUser || !isFirebaseConfigured) return;
+
+    setIsRefreshingData(true);
+    const unsubRegs = onSnapshot(collection(db, 'registrations'), (snapshot) => {
+      const list: Registration[] = [];
+      snapshot.forEach((docSnap) => {
+        list.push({ id: docSnap.id, ...docSnap.data() } as Registration);
+      });
+      // Sort newest first
+      list.sort((a, b) => {
+        const timeA = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : (a.createdAt?.toMillis?.() || 0);
+        const timeB = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : (b.createdAt?.toMillis?.() || 0);
+        return timeB - timeA;
+      });
+      setRegistrationsList(list);
+      setIsRefreshingData(false);
+    }, (err) => {
+      console.error('Registrations snapshot error:', err);
+      showError('Failed to stream live registrations from database.');
+      setIsRefreshingData(false);
+    });
+
+    return () => unsubRegs();
+  }, [adminUser]);
+
+  // Helper to verify if the authenticated user has a document in 'admins'
+  const verifyAdminAccess = async (user: User) => {
+    const userEmail = user.email ? user.email.toLowerCase() : '';
+    if (!userEmail) {
+      await signOut(auth);
+      setAdminUser(null);
+      showError('Not authorised');
+      return;
+    }
+
+    try {
+      const adminDocRef = doc(db, 'admins', userEmail);
+      const adminSnap = await getDoc(adminDocRef);
+      if (!adminSnap.exists()) {
+        await signOut(auth);
+        setAdminUser(null);
+        showError('Not authorised');
+        return;
+      }
+      setAdminUser(user);
+      showToast(`Welcome Admin ${user.email}!`);
+      setActiveTab('admin');
+    } catch (err: any) {
+      console.error('Admin verification error:', err);
+      await signOut(auth);
+      setAdminUser(null);
+      showError('Not authorised');
+    }
+  };
 
   const showToast = (msg: string) => {
     setSuccessToast(msg);
@@ -166,50 +210,15 @@ export default function App() {
     setTimeout(() => setErrorMsg(null), 6000);
   };
 
-  const fetchStats = async () => {
-    // Fetch download stats from API or direct Firestore
-    try {
-      const res = await fetch('/api/stats');
-      if (res.ok) {
-        const data = await res.json();
-        if (typeof data.count === 'number') {
-          setProgrammeDownloadsCount(data.count);
-          return;
-        }
-      }
-    } catch (_) {}
-
-    if (!isFirebaseConfigured || !db) return;
-    try {
-      const docRef = doc(db, 'stats', 'programmeDownloads');
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        const count = docSnap.data().count;
-        if (typeof count === 'number') {
-          setProgrammeDownloadsCount(count);
-        }
-      }
-    } catch (err: any) {
-      console.warn('Programme download stats currently unavailable:', err?.message || err);
+  // Programme PDF Download - Background Increment
+  const handleDownloadProgramme = () => {
+    // Non-blocking background increment
+    if (isFirebaseConfigured && db) {
+      setDoc(doc(db, 'programmeStats', 'downloads'), { count: increment(1) }, { merge: true })
+        .then(() => setProgrammeDownloadsCount(prev => prev + 1))
+        .catch((err) => console.error('Programme download increment error:', err));
     }
-  };
 
-  const handleDownloadProgramme = async () => {
-    // Record download stat via API route or client Firestore
-    try {
-      await fetch('/api/stats/download-programme', { method: 'POST' });
-      setProgrammeDownloadsCount(prev => prev + 1);
-    } catch (_) {
-      if (isFirebaseConfigured && db) {
-        try {
-          const statRef = doc(db, 'stats', 'programmeDownloads');
-          await setDoc(statRef, { count: increment(1) }, { merge: true });
-          setProgrammeDownloadsCount(prev => prev + 1);
-        } catch (err: any) {
-          console.warn('Could not record download stat:', err?.message || err);
-        }
-      }
-    }
     const link = document.createElement('a');
     link.href = '/Gaborone-South-Youth-Symposium-Programme.pdf';
     link.download = 'Gaborone-South-Youth-Symposium-Programme.pdf';
@@ -219,82 +228,55 @@ export default function App() {
     showToast('Programme PDF downloaded successfully!');
   };
 
-  // Fetch Registrations for Admin
-  const fetchRegistrations = async () => {
-    setIsRefreshingData(true);
+  // Admin Login via Email & Password
+  const handleEmailAdminLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adminEmailInput.trim() || !adminPasswordInput) {
+      showError('Please enter both admin email and password.');
+      return;
+    }
+
+    setAuthLoading(true);
+    setErrorMsg(null);
+
     try {
-      let list: Registration[] = [];
-      try {
-        const res = await fetch('/api/admin/registrations');
-        if (res.ok) {
-          list = await res.json();
-        }
-      } catch (_) {}
-
-      if (list.length === 0 && isFirebaseConfigured && db) {
-        const q = query(collection(db, 'registrations'));
-        const snapshot = await getDocs(q);
-        snapshot.forEach((docSnap) => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as Registration);
-        });
-      }
-
-      // Sort newest first
-      list.sort((a, b) => {
-        const timeA = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : (a.createdAt?.toMillis?.() || 0);
-        const timeB = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : (b.createdAt?.toMillis?.() || 0);
-        return timeB - timeA;
-      });
-      setRegistrationsList(list);
+      const cred = await signInWithEmailAndPassword(auth, adminEmailInput.trim(), adminPasswordInput);
+      await verifyAdminAccess(cred.user);
     } catch (err: any) {
-      console.warn('Error fetching registrations:', err?.message || err);
-      showError(err?.message || 'Failed to fetch registrations from the database.');
+      console.error('Email login error:', err);
+      showError(mapFirebaseAuthError(err));
     } finally {
-      setIsRefreshingData(false);
+      setAuthLoading(false);
     }
   };
 
-  // Handle Admin Login with Google (Popup with Redirect Fallback)
+  // Admin Login via Google (Popup with Redirect Fallback)
   const handleGoogleAdminLogin = async () => {
     if (!isFirebaseConfigured) {
-      showError('Firebase configuration is not configured.');
+      showError('Firebase is not configured.');
       return;
     }
     setAuthLoading(true);
     setErrorMsg(null);
     const provider = new GoogleAuthProvider();
-    provider.setCustomParameters({ prompt: 'select_account' });
 
     try {
       const result = await signInWithPopup(auth, provider);
-      if (!isAuthorizedAdminEmail(result.user.email)) {
-        const unauthorizedEmail = result.user.email || 'User';
-        await signOut(auth);
-        setAdminUser(null);
-        showError(`Not authorised: ${unauthorizedEmail} is not on the authorized admin list.`);
-        return;
-      }
-      setAdminUser(result.user);
-      showToast(`Welcome Admin ${result.user.email || 'User'}!`);
-      setActiveTab('admin');
-      fetchRegistrations();
+      await verifyAdminAccess(result.user);
     } catch (err: any) {
-      // If popup was blocked by browser, automatically fall back to signInWithRedirect
       if (err.code === 'auth/popup-blocked') {
-        showToast('Sign-in popup blocked by browser. Redirecting...');
+        showToast('Popup blocked by browser. Redirecting to sign in...');
         try {
           await signInWithRedirect(auth, provider);
           return;
         } catch (redirectErr) {
+          console.error('Google Redirect error:', redirectErr);
           showError(mapFirebaseAuthError(redirectErr));
-          return;
         }
+      } else if (err.code !== 'auth/popup-closed-by-user') {
+        console.error('Google Sign-In error:', err);
+        showError(mapFirebaseAuthError(err));
       }
-      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
-        // User closed the popup window
-        return;
-      }
-      showError(mapFirebaseAuthError(err));
     } finally {
       setAuthLoading(false);
     }
@@ -309,145 +291,80 @@ export default function App() {
     showToast('Signed out successfully.');
   };
 
-  // Handle Registration Submit (Recognizable naming convention: REG-2026-[CATEGORY]-[PHONE])
+  // Handle Public Registration Submit
   const handleRegistrationSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
 
-    // Validate consent
-    if (!formData.consent) {
+    if (!formData.consentGiven) {
       showError('You must agree to the data consent terms to register.');
-      return;
-    }
-
-    // Auto-normalize phone number for Botswana
-    let cleanPhone = formData.phone.trim().replace(/[\s\-\(\)]/g, '');
-    if (cleanPhone.startsWith('00267')) {
-      cleanPhone = '+' + cleanPhone.slice(2);
-    } else if (cleanPhone.startsWith('267')) {
-      cleanPhone = '+' + cleanPhone;
-    } else if (cleanPhone.startsWith('0') && cleanPhone.length >= 8) {
-      cleanPhone = '+267' + cleanPhone.slice(1);
-    } else if (/^\d{7,8}$/.test(cleanPhone)) {
-      cleanPhone = '+267' + cleanPhone;
-    }
-
-    // Validate Botswana phone number (+267 followed by 7 or 8 digits)
-    const phoneRegex = /^\+267\d{7,8}$/;
-    if (!phoneRegex.test(cleanPhone)) {
-      showError('Please enter a valid Botswana phone number (e.g. 71234567 or +26771234567).');
-      return;
-    }
-
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(formData.email.trim())) {
-      showError('Please enter a valid email address.');
       return;
     }
 
     setIsSubmitting(true);
 
-    try {
-      const phoneDigits = cleanPhone.replace(/\D/g, '');
-      const categoryTag = regType.toUpperCase();
-      let docId = `REG-2026-${categoryTag}-${phoneDigits}`;
+    // 15-second timeout guard
+    let timeoutId: any;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('REQUEST_TIMEOUT')), 15000);
+    });
 
+    try {
       const payload: any = {
-        id: docId,
-        ticketNumber: docId,
         type: regType,
-        phone: cleanPhone,
+        phone: formData.phone.trim(),
         email: formData.email.trim(),
         ward: formData.ward,
-        consent: formData.consent,
+        consentGiven: formData.consentGiven,
+        createdAt: serverTimestamp()
       };
 
       if (regType === 'individual') {
-        payload.name = formData.name.trim();
-        payload.idNumber = formData.idNumber.trim();
+        payload.fullName = formData.fullName.trim();
         payload.profession = formData.profession.trim();
-        payload.skills = formData.skills.trim();
+        payload.skillsOrServices = formData.skillsOrServices.trim();
       } else {
         payload.companyName = formData.companyName.trim();
         payload.contactPerson = formData.contactPerson.trim();
-        payload.plotNumber = formData.plotNumber.trim();
+        if (formData.plotNumber.trim()) {
+          payload.plotNumber = formData.plotNumber.trim();
+        }
         payload.sector = formData.sector;
-        payload.goodsAndServices = formData.goodsAndServices.trim();
-        payload.numberOfEmployees = Number(formData.numberOfEmployees) || 1;
+        payload.skillsOrServices = formData.skillsOrServices.trim();
+        payload.employeeCount = Number(formData.employeeCount) || 1;
       }
 
-      // Robust save: Try server API route first (bypasses browser adblockers and websocket blocks)
-      let saved = false;
-      try {
-        const response = await fetch('/api/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (response.ok) {
-          const resData = await response.json();
-          if (resData.id) {
-            docId = resData.id;
-          }
-          saved = true;
-        }
-      } catch (apiErr) {
-        console.warn('API save fallback to client Firestore:', apiErr);
-      }
+      // Single addDoc to registrations with timeout
+      const addPromise = addDoc(collection(db, 'registrations'), payload);
+      const docRef = (await Promise.race([addPromise, timeoutPromise])) as any;
 
-      // Direct client Firestore fallback if API route didn't complete
-      if (!saved && isFirebaseConfigured && db) {
-        try {
-          await setDoc(doc(db, 'registrations', docId), {
-            ...payload,
-            createdAt: serverTimestamp()
-          });
-          saved = true;
-        } catch (writeErr: any) {
-          if (writeErr.code === 'permission-denied') {
-            const timestampCode = Date.now().toString().slice(-4);
-            docId = `REG-2026-${categoryTag}-${phoneDigits}-${timestampCode}`;
-            payload.id = docId;
-            payload.ticketNumber = docId;
-            await setDoc(doc(db, 'registrations', docId), {
-              ...payload,
-              createdAt: serverTimestamp()
-            });
-            saved = true;
-          } else {
-            throw writeErr;
-          }
-        }
-      }
+      clearTimeout(timeoutId);
+      setTicketResult(docRef.id);
+      showToast('Registration saved to database successfully!');
 
-      if (!saved) {
-        throw new Error('Unable to save registration at this time. Please check your network connection and retry.');
-      }
-
-      setTicketResult(docId);
-      showToast(`Registration saved to database successfully! Ref: ${docId}`);
-      
       // Reset form
       setFormData({
-        name: '',
+        fullName: '',
         companyName: '',
         contactPerson: '',
         phone: '+267',
         email: '',
         ward: 'Babusi',
         plotNumber: '',
-        idNumber: '',
         profession: '',
         sector: 'Services',
-        skills: '',
-        goodsAndServices: '',
-        numberOfEmployees: 1,
-        consent: false
+        skillsOrServices: '',
+        employeeCount: 1,
+        consentGiven: false
       });
     } catch (err: any) {
-      console.warn('Registration Error:', err?.message || err);
-      showError(err?.message || 'Failed to submit registration. Please try again.');
+      clearTimeout(timeoutId);
+      console.error('Registration submission error:', err);
+      if (err?.message === 'REQUEST_TIMEOUT') {
+        showError('Registration timed out. Please check your network connection and try again.');
+      } else {
+        showError('Unable to complete registration. Please try again.');
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -460,20 +377,25 @@ export default function App() {
       return;
     }
 
-    const headers = ['ID', 'Type', 'Name / Entity', 'Contact Person', 'Phone', 'Email', 'Ward', 'ID Number', 'Plot Number', 'Profession / Sector', 'Skills / Services & Mandate', 'Staff / Employees', 'Created At'];
-    const rows = registrationsList.map(r => [
+    const headers = [
+      'Document ID', 'Type', 'Full Name / Company', 'Contact Person',
+      'Phone', 'Email', 'Ward', 'Plot Number', 'Profession / Sector',
+      'Skills or Services', 'Employee Count', 'Consent Given', 'Created At'
+    ];
+
+    const rows = filteredRegistrations.map(r => [
       r.id || '',
       r.type,
-      r.type === 'individual' ? r.name || '' : r.companyName || '',
+      r.type === 'individual' ? r.fullName || '' : r.companyName || '',
       r.contactPerson || '',
-      r.phone,
-      r.email,
-      r.ward,
-      r.idNumber || '',
+      r.phone || '',
+      r.email || '',
+      r.ward || '',
       r.plotNumber || '',
       r.type === 'individual' ? r.profession || '' : r.sector || '',
-      r.type === 'individual' ? r.skills || '' : r.goodsAndServices || '',
-      r.numberOfEmployees || '',
+      r.skillsOrServices || '',
+      r.employeeCount || '',
+      r.consentGiven ? 'Yes' : 'No',
       r.createdAt?.toDate?.() ? r.createdAt.toDate().toISOString() : 'Recent'
     ]);
 
@@ -482,7 +404,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `gaborone_south_economic_initiatives_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `gaborone_south_registrations_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -496,72 +418,24 @@ export default function App() {
     const matchesSector = filterSector === 'all' || r.sector === filterSector;
     
     const searchLower = adminSearch.toLowerCase();
-    const nameMatch = (r.name || r.companyName || '').toLowerCase().includes(searchLower);
-    const phoneMatch = r.phone.toLowerCase().includes(searchLower);
-    const emailMatch = r.email.toLowerCase().includes(searchLower);
+    const nameMatch = (r.fullName || r.companyName || '').toLowerCase().includes(searchLower);
+    const phoneMatch = (r.phone || '').toLowerCase().includes(searchLower);
+    const emailMatch = (r.email || '').toLowerCase().includes(searchLower);
     const matchesSearch = !adminSearch || nameMatch || phoneMatch || emailMatch;
 
     return matchesType && matchesWard && matchesSector && matchesSearch;
   });
 
-  // Calculate sector chart stats
+  // Analytics breakdowns
+  const individualCount = registrationsList.filter(r => r.type === 'individual').length;
+  const companyCount = registrationsList.filter(r => r.type === 'company').length;
+  const totalCount = registrationsList.length;
+
   const sectorCounts = SECTORS.map(sec => ({
     sector: sec,
     count: registrationsList.filter(r => r.sector === sec).length
   }));
   const maxSectorCount = Math.max(...sectorCounts.map(s => s.count), 1);
-
-  // 4-way type breakdown
-  const individualCount = registrationsList.filter(r => r.type === 'individual').length;
-  const companyCount = registrationsList.filter(r => r.type === 'company').length;
-  const institutionCount = registrationsList.filter(r => r.type === 'institution').length;
-  const organisationCount = registrationsList.filter(r => r.type === 'organisation').length;
-  const totalCount = registrationsList.length;
-
-  if (!isFirebaseConfigured) {
-    return (
-      <div className="min-h-screen bg-[#EAF5FC] text-[#1F2328] flex items-center justify-center p-4 font-['Outfit'] antialiased">
-        <div className="max-w-xl w-full bg-white rounded-3xl border border-[#C9CCD1] p-6 sm:p-10 shadow-lg space-y-6">
-          <div className="text-center space-y-3">
-            <div className="w-16 h-16 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center mx-auto border border-red-200">
-              <AlertCircle className="w-8 h-8" />
-            </div>
-            <span className="text-xs font-bold text-red-700 bg-red-100/70 border border-red-200 px-3 py-1 rounded-full uppercase tracking-wider inline-block">
-              Configuration Missing
-            </span>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1F2328]">
-              Firebase Setup Required
-            </h1>
-            <p className="text-xs sm:text-sm text-[#55565A] leading-relaxed">
-              This application reads Firebase configuration strictly from environment variables. The following required variables were not found:
-            </p>
-          </div>
-
-          <div className="bg-red-50/60 border border-red-200 rounded-2xl p-4 sm:p-5 space-y-2">
-            <div className="text-xs font-bold text-red-900 uppercase tracking-wider">Missing Variables:</div>
-            <ul className="space-y-1.5">
-              {missingFirebaseEnvVars.map(v => (
-                <li key={v} className="flex items-center space-x-2 text-xs font-mono font-bold text-red-700">
-                  <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                  <span>{v}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="space-y-3 bg-[#EAF5FC]/60 border border-[#C9CCD1] rounded-2xl p-4 sm:p-5 text-xs text-[#1F2328]">
-            <h2 className="font-bold text-sm text-[#1F2328]">How to resolve:</h2>
-            <ol className="list-decimal list-inside space-y-1.5 text-[#55565A]">
-              <li><strong>On Vercel:</strong> Open your project dashboard &gt; <strong>Settings &gt; Environment Variables</strong>.</li>
-              <li>Add the missing variables with values from Firebase Console (Project Settings &gt; General &gt; Your apps &gt; SDK setup).</li>
-              <li><strong>Local Development:</strong> Copy <code className="font-mono bg-white px-1.5 py-0.5 rounded border border-[#C9CCD1]">.env.example</code> to <code className="font-mono bg-white px-1.5 py-0.5 rounded border border-[#C9CCD1]">.env</code> and supply the values.</li>
-              <li>Redeploy your Vercel deployment or restart the dev server.</li>
-            </ol>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-[#EAF5FC] text-[#1F2328] flex flex-col font-['Outfit'] antialiased">
@@ -584,546 +458,241 @@ export default function App() {
           <button
             type="button"
             onClick={() => setErrorMsg(null)}
-            className="text-white/80 hover:text-white p-1 rounded-lg hover:bg-white/10 shrink-0 cursor-pointer"
-            aria-label="Dismiss error"
+            className="text-white hover:text-white/80 p-1 cursor-pointer shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
-      {/* Top Banner */}
-      <div className="bg-[#2E6DA4] text-white text-[11px] sm:text-xs md:text-sm py-2 px-3 sm:px-4 text-center font-medium flex items-center justify-center">
-        <span>Babusi Community Hall, Gaborone South • Friday, 6th November 2026</span>
-      </div>
+      {/* Top Header / Navigation */}
+      <header className="bg-white border-b border-[#C9CCD1] sticky top-0 z-40 shadow-xs">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16 sm:h-20">
+            
+            {/* Branding */}
+            <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('overview')}>
+              <img 
+                src="/assets/aistudio/gaborone-south-logo-transparent_07b83a00.png" 
+                alt="Gaborone South Logo" 
+                className="h-10 sm:h-12 w-auto object-contain shrink-0"
+              />
+              <div>
+                <h1 className="text-base sm:text-lg font-extrabold text-[#1F2328] leading-tight tracking-tight">
+                  Gaborone South Economic Initiatives
+                </h1>
+                <p className="text-[11px] sm:text-xs text-[#55565A] font-medium hidden sm:block">
+                  Theme: Youth at the Centre of a Thriving Economy, Reduced Import Bill and Healthy Minds
+                </p>
+              </div>
+            </div>
 
-      {/* Sticky Header Navigation */}
-      <header className="bg-white/95 backdrop-blur-md border-b border-[#C9CCD1]/60 sticky top-0 z-40 shadow-xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 sm:h-20 md:h-24 flex items-center justify-between">
-          
-          {/* Logo with mobile 36px rule */}
-          <div 
-            className="flex items-center cursor-pointer group py-1" 
-            onClick={() => { setActiveTab('overview'); setMobileMenuOpen(false); }}
-            title="Gaborone South Constituency Office"
-          >
-            <img 
-              src="/assets/aistudio/gaborone-south-logo-transparent_07b83a00.png" 
-              alt="Gaborone South Constituency Office"
-              className="h-9 sm:h-12 md:h-16 w-auto object-contain transition-transform group-hover:scale-[1.02]"
-            />
-          </div>
+            {/* Desktop Navigation */}
+            <nav className="hidden md:flex items-center space-x-1 sm:space-x-2">
+              {[
+                { id: 'overview', label: 'Overview' },
+                { id: 'register', label: 'Register Entry' },
+                { id: 'resources', label: 'Resource Center' },
+                { id: 'admin', label: adminUser ? 'Admin Dashboard' : 'Admin Login' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id as any)}
+                  className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer min-h-[40px] ${
+                    activeTab === tab.id
+                      ? 'bg-[#2E6DA4] text-white shadow-xs'
+                      : 'text-[#55565A] hover:bg-[#EAF5FC] hover:text-[#2E6DA4]'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
 
-          {/* Desktop Navigation */}
-          {adminUser ? (
-            <div className="hidden lg:flex items-center space-x-2 bg-[#EAF5FC] p-1.5 rounded-xl border border-[#C9CCD1]">
+            {/* Mobile Hamburger Button */}
+            <div className="md:hidden">
               <button
-                onClick={() => { setActiveTab('register'); setMobileMenuOpen(false); }}
-                className={`flex items-center space-x-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer min-h-[40px] ${
-                  activeTab === 'register' 
-                    ? 'bg-[#2E6DA4] text-white shadow-2xs' 
-                    : 'bg-white hover:bg-[#2E6DA4] text-[#2E6DA4] hover:text-white border border-[#C9CCD1]'
-                }`}
-                title="Register New Applicant"
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="p-2.5 rounded-xl text-[#55565A] hover:bg-[#EAF5FC] transition cursor-pointer border border-[#C9CCD1]/60"
               >
-                <Users className="w-4 h-4 shrink-0" />
-                <span>Register</span>
-              </button>
-
-              <button
-                onClick={fetchRegistrations}
-                disabled={isRefreshingData}
-                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold bg-white hover:bg-slate-100 text-[#1F2328] border border-[#C9CCD1] transition-all cursor-pointer min-h-[40px]"
-                title="Refresh Database Records"
-              >
-                <RefreshCw className={`w-4 h-4 text-[#2E6DA4] ${isRefreshingData ? 'animate-spin' : ''}`} />
-                <span>{isRefreshingData ? 'Refreshing...' : 'Refresh'}</span>
-              </button>
-
-              <button
-                onClick={exportToCSV}
-                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold bg-[#2E6DA4] hover:bg-[#245885] text-white shadow-2xs transition-all cursor-pointer min-h-[40px]"
-                title="Export Registrations to CSV"
-              >
-                <Download className="w-4 h-4 shrink-0" />
-                <span>Export CSV</span>
+                {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
               </button>
             </div>
-          ) : (
-            <nav className="hidden lg:flex items-center space-x-1 bg-[#EAF5FC] p-1.5 rounded-xl border border-[#C9CCD1]">
-              {[
-                { id: 'overview', label: 'Overview', icon: Users },
-                { id: 'programme', label: 'Programme', icon: Clock, onClick: () => { setActiveTab('overview'); setTimeout(() => document.getElementById('programme-section')?.scrollIntoView({ behavior: 'smooth' }), 100); } },
-                { id: 'register', label: 'Registration', icon: Award },
-                { id: 'resources', label: 'Resources', icon: BookOpen }
-              ].map(tab => {
-                const Icon = tab.icon;
-                const isActive = activeTab === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    onClick={() => {
-                      if (tab.onClick) {
-                        tab.onClick();
-                      } else {
-                        setActiveTab(tab.id as any);
-                      }
-                    }}
-                    className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 cursor-pointer min-h-[40px] ${
-                      isActive ? 'bg-[#2E6DA4] text-white shadow-xs' : 'text-[#55565A] hover:bg-white hover:text-[#2E6DA4]'
-                    }`}
-                  >
-                    <Icon className={`w-4 h-4 ${isActive ? 'text-[#72BEE7]' : 'text-[#55565A]'}`} />
-                    <span>{tab.label}</span>
-                  </button>
-                );
-              })}
-            </nav>
-          )}
 
-          {/* Action Buttons & Mobile Hamburger Toggle */}
-          <div className="flex items-center space-x-2 sm:space-x-3">
-            {/* Admin Dashboard / Login Button */}
-            {adminUser ? (
-              <>
-                <button
-                  onClick={() => { setActiveTab('admin'); setMobileMenuOpen(false); }}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-2 sm:px-3.5 sm:py-2.5 rounded-xl text-xs sm:text-sm flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors shrink-0 min-h-[44px]"
-                  title="Admin Dashboard"
-                >
-                  <ShieldCheck className="w-4 h-4 shrink-0" />
-                  <span className="hidden sm:inline">Admin Dashboard</span>
-                  <span className="sm:hidden">Admin</span>
-                </button>
-
-                {/* Red Logout Button on the Right */}
-                <button
-                  onClick={handleAdminLogout}
-                  className="bg-[#BA1A1A] hover:bg-red-700 text-white font-bold px-3 py-2 sm:px-3.5 sm:py-2.5 rounded-xl shadow-xs transition flex items-center gap-1.5 cursor-pointer text-xs sm:text-sm shrink-0 min-h-[44px]"
-                  title="Logout Administrator"
-                >
-                  <LogOut className="w-4 h-4 shrink-0 text-white" />
-                  <span className="hidden sm:inline">Logout</span>
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  onClick={() => { setActiveTab('admin'); setMobileMenuOpen(false); }}
-                  className="bg-white hover:bg-[#EAF5FC] text-[#2E6DA4] border border-[#C9CCD1] font-semibold px-2.5 py-2 sm:px-3.5 sm:py-2.5 rounded-xl text-xs sm:text-sm flex items-center gap-1.5 cursor-pointer shadow-2xs transition-colors shrink-0 min-h-[44px]"
-                  title="Admin Login"
-                >
-                  <Lock className="w-4 h-4 text-[#2E6DA4] shrink-0" />
-                  <span className="hidden sm:inline">Admin Login</span>
-                  <span className="sm:hidden">Login</span>
-                </button>
-
-                {/* Persistent Register Button for Public */}
-                <button
-                  onClick={() => { setActiveTab('register'); setMobileMenuOpen(false); }}
-                  className="bg-[#2E6DA4] hover:bg-[#245885] text-white font-bold px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl shadow-sm transition flex items-center space-x-1.5 cursor-pointer text-xs sm:text-sm shrink-0 min-h-[44px]"
-                >
-                  <Users className="w-4 h-4 text-white shrink-0" />
-                  <span>Register</span>
-                </button>
-              </>
-            )}
-
-            {/* Hamburger Menu Toggle */}
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="lg:hidden p-2 rounded-lg text-[#1F2328] hover:bg-[#EAF5FC] border border-[#C9CCD1] transition-colors cursor-pointer shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center"
-              aria-label="Toggle navigation menu"
-              aria-expanded={mobileMenuOpen}
-            >
-              {mobileMenuOpen ? (
-                <X className="w-6 h-6 text-[#2E6DA4]" />
-              ) : (
-                <Menu className="w-6 h-6 text-[#1F2328]" />
-              )}
-            </button>
           </div>
         </div>
 
-        {/* Mobile Dropdown Hamburger Menu */}
+        {/* Mobile Dropdown Menu */}
         {mobileMenuOpen && (
-          <div className="lg:hidden bg-white border-t border-[#C9CCD1] px-4 pt-3 pb-5 space-y-2 shadow-xl animate-fade-in">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-[#55565A] px-2 pb-1">
-              Navigation Menu
-            </div>
+          <div className="md:hidden bg-white border-b border-[#C9CCD1] px-4 pt-2 pb-4 space-y-1 animate-fade-in">
             {[
-              { id: 'overview', label: 'Overview', icon: Users, desc: 'Constituency info & key event details' },
-              { id: 'programme', label: 'Event Programme', icon: Clock, desc: 'Download symposium schedule PDF', onClick: () => { setActiveTab('overview'); setMobileMenuOpen(false); setTimeout(() => document.getElementById('programme-section')?.scrollIntoView({ behavior: 'smooth' }), 100); } },
-              { id: 'register', label: 'Registration Form', icon: Award, desc: 'Individual, Company, Institution & Organisation' },
-              { id: 'resources', label: 'Resource Library', icon: BookOpen, desc: 'Download official guidelines & guides' }
-            ].map(tab => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => {
-                    if (tab.onClick) {
-                      tab.onClick();
-                    } else {
-                      setActiveTab(tab.id as any);
-                      setMobileMenuOpen(false);
-                    }
-                  }}
-                  className={`w-full flex items-center space-x-3 px-3 py-3 rounded-xl text-left text-sm font-semibold transition-colors cursor-pointer min-h-[48px] ${
-                    isActive 
-                      ? 'bg-[#2E6DA4] text-white shadow-xs' 
-                      : 'text-[#1F2328] hover:bg-[#EAF5FC]'
-                  }`}
-                >
-                  <div className={`p-2 rounded-lg shrink-0 ${isActive ? 'bg-white/20 text-white' : 'bg-[#EAF5FC] text-[#2E6DA4]'}`}>
-                    <Icon className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="font-bold text-sm">{tab.label}</div>
-                    <div className={`text-xs ${isActive ? 'text-white/80' : 'text-[#55565A]'}`}>{tab.desc}</div>
-                  </div>
-                </button>
-              );
-            })}
-
-            {adminUser && (
-              <div className="pt-2 border-t border-[#C9CCD1] space-y-2">
-                <div className="text-[11px] font-bold uppercase tracking-wider text-[#2E6DA4] px-2 pt-1">
-                  Admin Tools
-                </div>
-                <button
-                  onClick={() => { setActiveTab('register'); setMobileMenuOpen(false); }}
-                  className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-left text-sm font-bold bg-[#EAF5FC] text-[#2E6DA4] hover:bg-[#2E6DA4] hover:text-white transition-colors"
-                >
-                  <Users className="w-5 h-5" />
-                  <span>Register New Applicant</span>
-                </button>
-                <button
-                  onClick={() => { fetchRegistrations(); setMobileMenuOpen(false); }}
-                  className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-left text-sm font-bold bg-slate-100 text-[#1F2328] hover:bg-slate-200 transition-colors"
-                >
-                  <RefreshCw className="w-5 h-5 text-[#2E6DA4]" />
-                  <span>Refresh Database</span>
-                </button>
-                <button
-                  onClick={() => { exportToCSV(); setMobileMenuOpen(false); }}
-                  className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-left text-sm font-bold bg-[#2E6DA4] text-white hover:bg-[#245885] transition-colors"
-                >
-                  <Download className="w-5 h-5" />
-                  <span>Export CSV</span>
-                </button>
-              </div>
-            )}
-
-            <div className="pt-2 border-t border-[#C9CCD1] mt-2">
+              { id: 'overview', label: 'Overview' },
+              { id: 'register', label: 'Register Entry' },
+              { id: 'resources', label: 'Resource Center' },
+              { id: 'admin', label: adminUser ? 'Admin Dashboard' : 'Admin Login' }
+            ].map(tab => (
               <button
+                key={tab.id}
                 onClick={() => {
-                  if (adminUser) {
-                    handleAdminLogout();
-                    setMobileMenuOpen(false);
-                  } else {
-                    setActiveTab('admin');
-                    setMobileMenuOpen(false);
-                  }
+                  setActiveTab(tab.id as any);
+                  setMobileMenuOpen(false);
                 }}
-                className={`w-full flex items-center space-x-3 px-3 py-3 rounded-xl text-left text-sm font-semibold transition-colors cursor-pointer min-h-[48px] ${
-                  adminUser 
-                    ? 'bg-[#BA1A1A] text-white shadow-xs hover:bg-red-700' 
-                    : activeTab === 'admin'
-                    ? 'bg-[#2E6DA4] text-white shadow-xs' 
-                    : 'text-[#1F2328] hover:bg-[#EAF5FC]'
+                className={`w-full text-left px-4 py-3 rounded-xl text-sm font-bold transition cursor-pointer ${
+                  activeTab === tab.id
+                    ? 'bg-[#2E6DA4] text-white'
+                    : 'text-[#55565A] hover:bg-[#EAF5FC]'
                 }`}
               >
-                <div className={`p-2 rounded-lg shrink-0 ${adminUser ? 'bg-white/20 text-white' : activeTab === 'admin' ? 'bg-white/20 text-white' : 'bg-[#EAF5FC] text-[#2E6DA4]'}`}>
-                  {adminUser ? <LogOut className="w-5 h-5" /> : <ShieldCheck className="w-5 h-5" />}
-                </div>
-                <div>
-                  <div className="font-bold text-sm">{adminUser ? 'Logout Admin' : 'Admin Portal Login'}</div>
-                  <div className={`text-xs ${adminUser || activeTab === 'admin' ? 'text-white/80' : 'text-[#55565A]'}`}>
-                    {adminUser ? adminUser.email : 'Authorized constituency administrators'}
-                  </div>
-                </div>
+                {tab.label}
               </button>
-            </div>
+            ))}
           </div>
         )}
       </header>
 
-      {/* Main Content Body */}
-      <main className="flex-grow w-full">
-        
+      {/* Main Content Area */}
+      <main className="flex-1">
+
         {/* ================= OVERVIEW TAB ================= */}
         {activeTab === 'overview' && (
-          <div className="animate-fade-in">
+          <div className="space-y-8 sm:space-y-12 pb-12">
             
-            {/* Parallax Slideshow Hero Section */}
-            <div className="relative w-full bg-[#EAF5FC] border-b border-[#C9CCD1] text-[#1F2328] overflow-hidden min-h-[500px] sm:min-h-[560px] lg:min-h-[620px] flex items-center">
+            {/* Hero Section with Dynamic Slideshow */}
+            <section className="relative bg-[#245885] text-white min-h-[380px] sm:min-h-[460px] flex items-center overflow-hidden">
+              {HERO_SLIDES.map((slide, index) => (
+                <div 
+                  key={index}
+                  className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${
+                    index === currentHeroSlide ? 'opacity-35' : 'opacity-0'
+                  }`}
+                >
+                  <img 
+                    src={slide.url} 
+                    alt={slide.alt}
+                    className="w-full h-full object-cover hero-slide-image animate-kenburns"
+                  />
+                </div>
+              ))}
               
-              {/* Slideshow Background Images with Smooth Crossfade & Ken Burns Effect */}
-              {HERO_SLIDES.map((slide, idx) => {
-                const isActive = idx === currentHeroSlide;
-                return (
-                  <div
-                    key={idx}
-                    className={`absolute inset-0 transition-all duration-[1400ms] ease-in-out transform-gpu hero-slide-image ${
-                      isActive 
-                        ? 'opacity-100 scale-100 z-0' 
-                        : 'opacity-0 scale-[1.03] z-0 pointer-events-none'
-                    }`}
-                  >
-                    <img
-                      src={slide.url}
-                      alt={slide.alt}
-                      className="w-full h-full object-cover object-center animate-kenburns hero-slide-image"
-                    />
-                    {/* Gradient Scrim for Contrast & Legibility */}
-                    <div className="absolute inset-0 bg-gradient-to-r from-[#EAF5FC] via-[#EAF5FC]/90 via-50% to-[#EAF5FC]/30 lg:to-transparent"></div>
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#EAF5FC] via-transparent to-transparent opacity-80 sm:hidden"></div>
-                  </div>
-                );
-              })}
+              <div className="absolute inset-0 bg-gradient-to-r from-[#245885]/95 via-[#2E6DA4]/85 to-transparent"></div>
 
-              {/* Hero Foreground Content */}
-              <div className="relative z-10 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-16 lg:py-20">
-                <div className="max-w-2xl lg:max-w-3xl space-y-4 sm:space-y-6">
-                  
-                  <h1 className="text-fluid-hero font-extrabold tracking-tight leading-tight text-[#1F2328]">
-                    Youth at the Centre of a Thriving Economy, Reduced Import Bill and Healthy Minds
+              <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-16 z-10 w-full">
+                <div className="max-w-3xl space-y-4 sm:space-y-6">
+                  <div className="inline-flex items-center space-x-2 bg-white/10 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/20 text-xs sm:text-sm font-medium">
+                    <Sparkles className="w-4 h-4 text-[#72BEE7]" />
+                    <span>Official Constituency Empowerment Initiative</span>
+                  </div>
+
+                  <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight">
+                    Youth at the Centre of a Thriving Economy
                   </h1>
 
-                  <p className="text-base sm:text-lg text-[#1F2328] font-normal leading-relaxed">
-                    Join constituency leadership, young entrepreneurs, community institutions, and organisations at Babusi Community Hall to debate policies, unlock economic grants, and build self-reliant local industries.
+                  <p className="text-sm sm:text-lg text-white/90 leading-relaxed font-normal">
+                    Gaborone South Constituency Economic Initiatives — Dedicated to enterprise innovation, reduced import reliance, healthy minds, and community growth across Babusi, Bontleng, Old Naledi, White City, and all wards.
                   </p>
-                  
-                  {/* Hero Action CTAs */}
-                  <div className="flex flex-col sm:flex-row flex-wrap gap-3 sm:gap-4 pt-2">
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-2">
                     <button
                       onClick={() => setActiveTab('register')}
-                      className="w-full sm:w-auto bg-[#2E6DA4] hover:bg-[#245885] text-white font-bold px-6 py-3.5 sm:py-3 rounded-xl shadow-md transition flex items-center justify-center space-x-2 cursor-pointer min-h-[48px] text-base"
+                      className="bg-[#72BEE7] hover:bg-[#5aaedc] text-[#1F2328] font-bold px-6 py-3.5 rounded-xl shadow-lg transition cursor-pointer text-center text-sm sm:text-base min-h-[48px] flex items-center justify-center gap-2"
                     >
-                      <Users className="w-5 h-5 text-white" />
-                      <span>Register Now</span>
+                      <span>Register Entry / Company</span>
                     </button>
-                    
+
                     <button
                       onClick={handleDownloadProgramme}
-                      className="w-full sm:w-auto bg-white hover:bg-[#EAF5FC] text-[#2E6DA4] border border-[#C9CCD1] font-bold px-6 py-3.5 sm:py-3 rounded-xl transition flex items-center justify-center space-x-2 cursor-pointer shadow-2xs min-h-[48px] text-base"
+                      className="bg-white/10 hover:bg-white/20 text-white font-bold px-6 py-3.5 rounded-xl border border-white/30 backdrop-blur-md transition cursor-pointer text-center text-sm sm:text-base min-h-[48px] flex items-center justify-center gap-2"
                     >
-                      <Download className="w-5 h-5 text-[#2E6DA4]" />
-                      <span>Download Programme (PDF)</span>
+                      <Download className="w-4 h-4" />
+                      <span>Download Symposium Programme PDF</span>
                     </button>
                   </div>
+                </div>
+              </div>
+            </section>
 
-                  {/* Slideshow Controls & Indicators */}
-                  <div className="flex items-center justify-between sm:justify-start gap-4 pt-4 border-t border-[#C9CCD1]/40">
-                    <div className="flex items-center gap-2">
-                      {HERO_SLIDES.map((_, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => setCurrentHeroSlide(idx)}
-                          className={`h-2.5 rounded-full transition-all duration-300 cursor-pointer ${
-                            idx === currentHeroSlide ? 'w-8 bg-[#2E6DA4]' : 'w-2.5 bg-[#C9CCD1] hover:bg-[#72BEE7]'
-                          }`}
-                          aria-label={`Go to slide ${idx + 1}`}
-                        />
-                      ))}
-                    </div>
+            {/* Key Pillars */}
+            <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+              <div className="text-center max-w-2xl mx-auto mb-8 sm:mb-10">
+                <h2 className="text-2xl sm:text-3xl font-extrabold text-[#1F2328]">Initiative Focus Pillars</h2>
+                <p className="text-xs sm:text-sm text-[#55565A] mt-2">Empowering youth enterprises and township economic transformation.</p>
+              </div>
 
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => setCurrentHeroSlide((prev) => (prev - 1 + HERO_SLIDES.length) % HERO_SLIDES.length)}
-                        className="p-2 rounded-lg bg-white/80 hover:bg-white border border-[#C9CCD1] text-[#1F2328] transition-colors cursor-pointer shadow-2xs"
-                        aria-label="Previous image"
-                      >
-                        <ChevronLeft className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => setCurrentHeroSlide((prev) => (prev + 1) % HERO_SLIDES.length)}
-                        className="p-2 rounded-lg bg-white/80 hover:bg-white border border-[#C9CCD1] text-[#1F2328] transition-colors cursor-pointer shadow-2xs"
-                        aria-label="Next image"
-                      >
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-                    </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="bg-white p-6 rounded-2xl border border-[#C9CCD1] shadow-xs space-y-3">
+                  <div className="w-12 h-12 bg-[#EAF5FC] text-[#2E6DA4] rounded-xl flex items-center justify-center border border-[#72BEE7]">
+                    <Building2 className="w-6 h-6" />
                   </div>
-
-                </div>
-              </div>
-            </div>
-
-            {/* Quick Stats Grid */}
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12 space-y-8 sm:space-y-12">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
-                {[
-                  { label: 'Official Venue', value: 'Babusi Community Hall', desc: 'Broadhurst, Gaborone South', icon: MapPin },
-                  { label: 'Event Date', value: '6th November 2026', desc: '08:30 AM - 17:00 PM', icon: Clock },
-                  { label: 'Economic Fund', value: 'P4.5 Million', desc: 'Allocated for Micro-Grants & Support', icon: Award }
-                ].map((stat, idx) => {
-                  const Icon = stat.icon;
-                  return (
-                    <div key={idx} className="bg-white p-5 sm:p-6 rounded-2xl border border-[#C9CCD1] shadow-xs hover:border-[#72BEE7] transition">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-[#EAF5FC] text-[#2E6DA4] flex items-center justify-center font-bold">
-                          <Icon className="w-5 h-5 sm:w-6 sm:h-6" />
-                        </div>
-                        <span className="text-xs font-semibold bg-[#EAF5FC] text-[#2E6DA4] px-2.5 py-1 rounded-full border border-[#72BEE7]/40">
-                          Active
-                        </span>
-                      </div>
-                      <div className="text-xl sm:text-2xl font-extrabold text-[#1F2328]">{stat.value}</div>
-                      <div className="text-sm font-semibold text-[#1F2328] mt-1">{stat.label}</div>
-                      <div className="text-xs text-[#55565A] mt-1">{stat.desc}</div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Programme Section */}
-              <div id="programme-section" className="bg-white rounded-2xl border border-[#C9CCD1] p-5 sm:p-8 lg:p-10 shadow-xs space-y-6">
-                <div className="max-w-3xl space-y-2">
-                  <span className="text-xs font-bold text-[#2E6DA4] bg-[#EAF5FC] border border-[#72BEE7]/40 px-3 py-1 rounded-full uppercase tracking-wider inline-block">
-                    Official Schedule
-                  </span>
-                  <h2 className="text-2xl sm:text-3xl font-extrabold text-[#1F2328]">
-                    Event Programme
-                  </h2>
-                  <p className="text-sm sm:text-base text-[#55565A]">
-                    Download the full programme for the Youth Symposium, 6 November 2026, Babusi Community Hall
-                  </p>
-                </div>
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4 pt-2">
-                  <button
-                    onClick={handleDownloadProgramme}
-                    className="w-full sm:w-auto bg-[#2E6DA4] hover:bg-[#245885] text-white font-bold px-6 py-3.5 rounded-xl shadow-sm transition flex items-center justify-center space-x-2 cursor-pointer min-h-[48px] text-sm"
-                  >
-                    <Download className="w-5 h-5 text-white" />
-                    <span>Download Programme (PDF)</span>
-                  </button>
-                  <a
-                    href="/Gaborone-South-Youth-Symposium-Programme.pdf"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full sm:w-auto bg-white hover:bg-[#EAF5FC] text-[#2E6DA4] border border-[#C9CCD1] font-semibold px-6 py-3.5 rounded-xl transition flex items-center justify-center space-x-2 cursor-pointer shadow-2xs min-h-[48px] text-sm"
-                  >
-                    <span>View online →</span>
-                  </a>
-                </div>
-              </div>
-
-              {/* Vision, Mission, Strategy & Set Goals */}
-              <div className="bg-white rounded-2xl border border-[#C9CCD1] p-5 sm:p-8 lg:p-10 shadow-xs space-y-6 sm:space-y-8">
-                <div className="max-w-3xl space-y-2">
-                  <span className="text-xs font-bold text-[#2E6DA4] bg-[#EAF5FC] border border-[#72BEE7]/40 px-3 py-1 rounded-full uppercase tracking-wider inline-block">
-                    Constituency Framework
-                  </span>
-                  <h2 className="text-2xl sm:text-3xl font-extrabold text-[#1F2328]">
-                    Vision, Mission, Strategy & Set Goals
-                  </h2>
-                  <p className="text-sm sm:text-base text-[#55565A]">
-                    Guiding principles for the Gaborone South Constituency Economic Initiatives and ecosystem development.
+                  <h3 className="text-lg font-bold text-[#1F2328]">Thriving Township Economy</h3>
+                  <p className="text-xs sm:text-sm text-[#55565A] leading-relaxed">
+                    Unlocking potential across all Gaborone South wards with structured micro-grants, enterprise incubation, and technical development.
                   </p>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
-                  {/* Our Vision */}
-                  <div className="bg-[#EAF5FC]/50 hover:bg-[#EAF5FC] rounded-2xl p-5 sm:p-6 border border-[#C9CCD1] hover:border-[#2E6DA4] transition-all space-y-3 flex flex-col justify-between">
-                    <div className="space-y-3">
-                      <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-[#2E6DA4] text-white flex items-center justify-center font-bold shadow-xs">
-                        <Sparkles className="w-5 h-5 sm:w-6 sm:h-6" />
-                      </div>
-                      <div className="text-xs font-bold text-[#2E6DA4] uppercase tracking-wider">Our Vision</div>
-                      <h3 className="text-base sm:text-lg font-bold text-[#1F2328]">Center of Excellence & Flagship Township Economy</h3>
-                      <p className="text-xs sm:text-sm text-[#55565A] leading-relaxed">
-                        Gaborone South Constituency should be a center of Excellence and Brilliance, Business, Tourism, Cultural, Heritage Activities and a Flagship for Township Economy.
-                      </p>
-                    </div>
+                <div className="bg-white p-6 rounded-2xl border border-[#C9CCD1] shadow-xs space-y-3">
+                  <div className="w-12 h-12 bg-[#EAF5FC] text-[#2E6DA4] rounded-xl flex items-center justify-center border border-[#72BEE7]">
+                    <TrendingUp className="w-6 h-6" />
                   </div>
+                  <h3 className="text-lg font-bold text-[#1F2328]">Reduced Import Bill</h3>
+                  <p className="text-xs sm:text-sm text-[#55565A] leading-relaxed">
+                    Supporting local manufacturing, urban agriculture, and service production to foster self-reliance and reduce reliance on imported goods.
+                  </p>
+                </div>
 
-                  {/* Mission */}
-                  <div className="bg-[#EAF5FC]/50 hover:bg-[#EAF5FC] rounded-2xl p-5 sm:p-6 border border-[#C9CCD1] hover:border-[#2E6DA4] transition-all space-y-3 flex flex-col justify-between">
-                    <div className="space-y-3">
-                      <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-[#2E6DA4] text-white flex items-center justify-center font-bold shadow-xs">
-                        <ShieldCheck className="w-5 h-5 sm:w-6 sm:h-6" />
-                      </div>
-                      <div className="text-xs font-bold text-[#2E6DA4] uppercase tracking-wider">Mission</div>
-                      <h3 className="text-base sm:text-lg font-bold text-[#1F2328]">Eradication of Unemployment & Poverty</h3>
-                      <p className="text-xs sm:text-sm text-[#55565A] leading-relaxed">
-                        The eradication of Unemployment, Poverty and Destitution in the Constituency.
-                      </p>
-                    </div>
+                <div className="bg-white p-6 rounded-2xl border border-[#C9CCD1] shadow-xs space-y-3">
+                  <div className="w-12 h-12 bg-[#EAF5FC] text-[#2E6DA4] rounded-xl flex items-center justify-center border border-[#72BEE7]">
+                    <Award className="w-6 h-6" />
                   </div>
-
-                  {/* Strategy */}
-                  <div className="bg-[#EAF5FC]/50 hover:bg-[#EAF5FC] rounded-2xl p-5 sm:p-6 border border-[#C9CCD1] hover:border-[#2E6DA4] transition-all space-y-3 flex flex-col justify-between">
-                    <div className="space-y-3">
-                      <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-[#2E6DA4] text-white flex items-center justify-center font-bold shadow-xs">
-                        <Users className="w-5 h-5 sm:w-6 sm:h-6" />
-                      </div>
-                      <div className="text-xs font-bold text-[#2E6DA4] uppercase tracking-wider">Strategy</div>
-                      <h3 className="text-base sm:text-lg font-bold text-[#1F2328]">Constituency Ecosystem Alignment</h3>
-                      <p className="text-xs sm:text-sm text-[#55565A] leading-relaxed">
-                        Alignment of the important Key Stakeholders namely Communities, Companies, Institutions and Organisations as one Constituency Ecosystem.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Set Goals */}
-                  <div className="bg-[#EAF5FC]/50 hover:bg-[#EAF5FC] rounded-2xl p-5 sm:p-6 border border-[#C9CCD1] hover:border-[#2E6DA4] transition-all space-y-3 flex flex-col justify-between">
-                    <div className="space-y-3">
-                      <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-[#2E6DA4] text-white flex items-center justify-center font-bold shadow-xs">
-                        <Award className="w-5 h-5 sm:w-6 sm:h-6" />
-                      </div>
-                      <div className="text-xs font-bold text-[#2E6DA4] uppercase tracking-wider">Set Goals</div>
-                      <h3 className="text-base sm:text-lg font-bold text-[#1F2328]">Clustering Models & Production Hubs</h3>
-                      <p className="text-xs sm:text-sm text-[#55565A] leading-relaxed">
-                        Implementation of Clustering Models and Productions Hubs for the optimization of all Employment Opportunities and Wealth Creation Platforms in the Constituency.
-                      </p>
-                    </div>
-                  </div>
+                  <h3 className="text-lg font-bold text-[#1F2328]">Healthy Minds & Community</h3>
+                  <p className="text-xs sm:text-sm text-[#55565A] leading-relaxed">
+                    Holistic development addressing youth wellness, mentorship, leadership training, and active economic participation.
+                  </p>
                 </div>
               </div>
+            </section>
 
-            </div>
           </div>
         )}
 
-        {/* ================= REGISTRATION TAB ================= */}
+        {/* ================= REGISTER TAB ================= */}
         {activeTab === 'register' && (
-          <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-10 space-y-6 animate-fade-in">
-            <div className="bg-white p-5 sm:p-8 rounded-2xl border border-[#C9CCD1] shadow-xs space-y-6">
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-10 animate-fade-in">
+            <div className="bg-white rounded-3xl border border-[#C9CCD1] p-6 sm:p-10 shadow-md space-y-8">
               
-              <div className="text-center space-y-2">
+              <div className="text-center max-w-xl mx-auto space-y-2">
                 <span className="text-xs font-bold text-[#2E6DA4] bg-[#EAF5FC] border border-[#72BEE7]/40 px-3 py-1 rounded-full uppercase tracking-wider inline-block">
-                  Gaborone South Constituency Economic Initiatives
+                  Registration Portal
                 </span>
-                <h2 className="text-2xl sm:text-3xl font-extrabold text-[#1F2328]">Official Registration Portal</h2>
-                <p className="text-sm text-[#55565A]">Register as an Individual, Company, Institution, or Organisation.</p>
+                <h2 className="text-2xl sm:text-3xl font-extrabold text-[#1F2328]">
+                  Register Entry or Enterprise
+                </h2>
+                <p className="text-xs sm:text-sm text-[#55565A]">
+                  Submit your details to participate in economic grants, incubation, and constituency support initiatives.
+                </p>
               </div>
 
               {ticketResult ? (
-                <div className="bg-[#EAF5FC] border border-[#72BEE7] p-6 sm:p-8 rounded-2xl text-center space-y-4">
-                  <div className="w-16 h-16 bg-white text-[#2E6DA4] rounded-full flex items-center justify-center mx-auto shadow-xs border border-[#72BEE7]">
-                    <CheckCircle2 className="w-10 h-10 text-[#2E6DA4]" />
+                <div className="bg-[#EAF5FC] border-2 border-[#72BEE7] rounded-2xl p-6 sm:p-8 text-center space-y-4 animate-scale-up">
+                  <div className="w-16 h-16 bg-[#2E6DA4] text-white rounded-2xl flex items-center justify-center mx-auto shadow-md">
+                    <CheckCircle2 className="w-10 h-10 text-[#72BEE7]" />
                   </div>
                   <h3 className="text-xl sm:text-2xl font-bold text-[#1F2328]">Registration Successful!</h3>
-                  <p className="text-xs sm:text-sm text-[#55565A]">Your registration has been successfully saved to the database under the recognizable document ID:</p>
+                  <p className="text-xs sm:text-sm text-[#55565A]">Your registration has been successfully saved to the database. Reference ID:</p>
                   <div className="bg-white py-3 px-4 rounded-xl border border-[#72BEE7] text-base sm:text-xl font-mono font-bold text-[#2E6DA4] shadow-2xs select-all break-all">
                     {ticketResult}
                   </div>
-                  <p className="text-xs text-[#55565A]">Stored directly in database path <code className="bg-white/80 px-1.5 py-0.5 rounded text-[#2E6DA4] font-mono font-semibold border border-[#72BEE7]/40">registrations/{ticketResult}</code>. Please present this reference on Friday, 6th November 2026 at Babusi Community Hall.</p>
+                  <p className="text-xs text-[#55565A]">Stored in collection <code className="bg-white/80 px-1.5 py-0.5 rounded text-[#2E6DA4] font-mono font-semibold border border-[#72BEE7]/40">registrations</code>.</p>
                   
                   <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
                     <button
                       onClick={handleDownloadProgramme}
                       className="w-full sm:w-auto bg-[#2E6DA4] hover:bg-[#245885] text-white px-6 py-3.5 rounded-xl font-bold text-sm cursor-pointer transition-colors flex items-center justify-center gap-2 min-h-[48px] shadow-sm"
                     >
-                      <Download className="w-5 h-5 text-white" />
-                      <span>Download Programme (PDF)</span>
+                      <Download className="w-4 h-4" />
+                      <span>Download Programme PDF</span>
                     </button>
                     <button
-                      onClick={() => { setTicketResult(null); }}
+                      onClick={() => setTicketResult(null)}
                       className="w-full sm:w-auto bg-white hover:bg-[#EAF5FC] text-[#2E6DA4] border border-[#C9CCD1] px-6 py-3.5 rounded-xl font-bold text-sm cursor-pointer transition-colors min-h-[48px] shadow-2xs"
                     >
                       Register Another Entry
@@ -1136,12 +705,10 @@ export default function App() {
                   {/* Category Segmented Control */}
                   <div>
                     <label className="block text-xs font-bold text-[#1F2328] uppercase mb-2">Registration Category *</label>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="grid grid-cols-2 gap-3">
                       {[
                         { id: 'individual', label: 'Individual', sub: 'Citizen / Youth', icon: Users },
-                        { id: 'company', label: 'Company', sub: 'Private Business', icon: Building2 },
-                        { id: 'institution', label: 'Institution', sub: 'Public / Academic', icon: Award },
-                        { id: 'organisation', label: 'Organisation', sub: 'NGO / Community', icon: ShieldCheck }
+                        { id: 'company', label: 'Company / Enterprise', sub: 'Private Business', icon: Building2 }
                       ].map(item => {
                         const Icon = item.icon;
                         const isSelected = regType === item.id;
@@ -1150,14 +717,14 @@ export default function App() {
                             key={item.id}
                             type="button"
                             onClick={() => setRegType(item.id as RegistrationType)}
-                            className={`p-3 rounded-xl border text-center transition cursor-pointer flex flex-col items-center justify-center gap-1 min-h-[56px] ${
+                            className={`p-4 rounded-xl border text-center transition cursor-pointer flex flex-col items-center justify-center gap-1 min-h-[64px] ${
                               isSelected 
                                 ? 'bg-[#2E6DA4] text-white border-[#2E6DA4] shadow-xs' 
                                 : 'bg-white text-[#55565A] border-[#C9CCD1] hover:bg-[#EAF5FC]'
                             }`}
                           >
                             <Icon className={`w-5 h-5 ${isSelected ? 'text-white' : 'text-[#2E6DA4]'}`} />
-                            <span className="font-bold text-xs">{item.label}</span>
+                            <span className="font-bold text-xs sm:text-sm">{item.label}</span>
                             <span className={`text-[10px] ${isSelected ? 'text-white/80' : 'text-[#55565A]'}`}>{item.sub}</span>
                           </button>
                         );
@@ -1167,52 +734,37 @@ export default function App() {
 
                   <div className="space-y-4 pt-2 border-t border-[#C9CCD1]">
                     
-                    {/* Dynamic Name / Entity Fields */}
+                    {/* Dynamic Name Fields */}
                     {regType === 'individual' ? (
                       <div>
                         <label className="block text-xs font-semibold text-[#1F2328] mb-1">Full Name *</label>
                         <input
                           type="text"
                           required
-                          autoComplete="name"
                           placeholder="e.g. Kagiso Modisa"
-                          value={formData.name}
-                          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                          value={formData.fullName}
+                          onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
                           className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
                         />
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
-                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">
-                            {regType === 'company' && 'Company Name *'}
-                            {regType === 'institution' && 'Institution Name *'}
-                            {regType === 'organisation' && 'Organisation Name *'}
-                          </label>
+                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">Company Name *</label>
                           <input
                             type="text"
                             required
-                            autoComplete="organization"
-                            placeholder={
-                              regType === 'company' ? 'e.g. Broadhurst Tech Solutions (Pty) Ltd' :
-                              regType === 'institution' ? 'e.g. Gaborone South Vocational Institute' :
-                              'e.g. Tsholofelo Youth Development Trust'
-                            }
+                            placeholder="e.g. Broadhurst Tech Solutions (Pty) Ltd"
                             value={formData.companyName}
                             onChange={(e) => setFormData({ ...formData, companyName: e.target.value })}
                             className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
                           />
                         </div>
                         <div>
-                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">
-                            {regType === 'company' && 'Contact Person / Representative *'}
-                            {regType === 'institution' && 'Liaison Contact Person *'}
-                            {regType === 'organisation' && 'Coordinator / Executive Contact *'}
-                          </label>
+                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">Contact Person / Representative *</label>
                           <input
                             type="text"
                             required
-                            autoComplete="name"
                             placeholder="e.g. Lesego Tau"
                             value={formData.contactPerson}
                             onChange={(e) => setFormData({ ...formData, contactPerson: e.target.value })}
@@ -1228,24 +780,20 @@ export default function App() {
                         <label className="block text-xs font-semibold text-[#1F2328] mb-1">Phone Number (+267...) *</label>
                         <input
                           type="tel"
-                          inputMode="tel"
                           required
-                          autoComplete="tel"
                           placeholder="+26771234567"
                           value={formData.phone}
                           onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                           className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
                         />
-                        <span className="text-[11px] text-[#55565A] mt-1 block">Format: +267 followed by 7 or 8 digits</span>
+                        <span className="text-[11px] text-[#55565A] mt-1 block">7 to 25 characters (e.g. +26771234567)</span>
                       </div>
 
                       <div>
                         <label className="block text-xs font-semibold text-[#1F2328] mb-1">Email Address *</label>
                         <input
                           type="email"
-                          inputMode="email"
                           required
-                          autoComplete="email"
                           placeholder="contact@example.com"
                           value={formData.email}
                           onChange={(e) => setFormData({ ...formData, email: e.target.value })}
@@ -1254,7 +802,7 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Ward & ID or Plot Number */}
+                    {/* Ward & Plot Number */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
                         <label className="block text-xs font-semibold text-[#1F2328] mb-1">Ward *</label>
@@ -1268,60 +816,45 @@ export default function App() {
                       </div>
 
                       <div>
-                        {regType === 'individual' ? (
-                          <>
-                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">ID Number (Omang / Passport) *</label>
+                        {regType === 'company' ? (
+                          <div>
+                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">Plot Number (Optional)</label>
+                            <input
+                              type="text"
+                              placeholder="e.g. Plot 4521, Broadhurst"
+                              value={formData.plotNumber}
+                              onChange={(e) => setFormData({ ...formData, plotNumber: e.target.value })}
+                              className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
+                            />
+                          </div>
+                        ) : (
+                          <div>
+                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">Profession / Occupation *</label>
                             <input
                               type="text"
                               required
-                              placeholder="e.g. 123456789 (Omang or Passport)"
-                              value={formData.idNumber}
-                              onChange={(e) => setFormData({ ...formData, idNumber: e.target.value })}
-                              className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
+                              placeholder="e.g. Software Developer / Farmer / Student"
+                              value={formData.profession}
+                              onChange={(e) => setFormData({ ...formData, profession: e.target.value })}
+                              className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
                             />
-                          </>
-                        ) : (
-                          <>
-                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">
-                              Plot Number <span className="text-[#55565A] font-normal">(Optional)</span>
-                            </label>
-                            <input
-                              type="text"
-                              placeholder="e.g. Plot 4521, Broadhurst (Optional)"
-                              value={formData.plotNumber}
-                              onChange={(e) => setFormData({ ...formData, plotNumber: e.target.value })}
-                              className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
-                            />
-                          </>
+                          </div>
                         )}
                       </div>
                     </div>
 
                     {/* Category Specific Details */}
                     {regType === 'individual' ? (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">Profession / Occupation *</label>
-                          <input
-                            type="text"
-                            required
-                            placeholder="e.g. Software Developer / Farmer / Student"
-                            value={formData.profession}
-                            onChange={(e) => setFormData({ ...formData, profession: e.target.value })}
-                            className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">Key Skills & Talents *</label>
-                          <input
-                            type="text"
-                            required
-                            placeholder="e.g. Web Dev, Carpentry, Accounting"
-                            value={formData.skills}
-                            onChange={(e) => setFormData({ ...formData, skills: e.target.value })}
-                            className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
-                          />
-                        </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-[#1F2328] mb-1">Skills & Talents *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="e.g. Web Development, Carpentry, Agriculture"
+                          value={formData.skillsOrServices}
+                          onChange={(e) => setFormData({ ...formData, skillsOrServices: e.target.value })}
+                          className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
+                        />
                       </div>
                     ) : (
                       <div className="space-y-4">
@@ -1337,38 +870,25 @@ export default function App() {
                             </select>
                           </div>
                           <div>
-                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">
-                              {regType === 'company' ? 'Number of Employees *' :
-                               regType === 'institution' ? 'Number of Staff / Employees *' :
-                               'Number of Members / Staff *'}
-                            </label>
+                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">Employee Count *</label>
                             <input
                               type="number"
                               required
                               min={1}
-                              inputMode="numeric"
-                              value={formData.numberOfEmployees}
-                              onChange={(e) => setFormData({ ...formData, numberOfEmployees: Number(e.target.value) })}
+                              value={formData.employeeCount}
+                              onChange={(e) => setFormData({ ...formData, employeeCount: Number(e.target.value) })}
                               className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
                             />
                           </div>
                         </div>
                         <div>
-                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">
-                            {regType === 'company' ? 'Goods & Services Offered *' :
-                             regType === 'institution' ? 'Programs, Mandate & Public Services *' :
-                             'Community Programs & Services Offered *'}
-                          </label>
+                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">Goods & Services Offered *</label>
                           <input
                             type="text"
                             required
-                            placeholder={
-                              regType === 'company' ? 'e.g. Solar panel installation, grocery supplies' :
-                              regType === 'institution' ? 'e.g. Technical education, healthcare, civic training' :
-                              'e.g. Youth mentoring, community sports, food hampers'
-                            }
-                            value={formData.goodsAndServices}
-                            onChange={(e) => setFormData({ ...formData, goodsAndServices: e.target.value })}
+                            placeholder="e.g. Solar panel installation, catering supplies"
+                            value={formData.skillsOrServices}
+                            onChange={(e) => setFormData({ ...formData, skillsOrServices: e.target.value })}
                             className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
                           />
                         </div>
@@ -1381,12 +901,12 @@ export default function App() {
                         <input
                           type="checkbox"
                           required
-                          checked={formData.consent}
-                          onChange={(e) => setFormData({ ...formData, consent: e.target.checked })}
+                          checked={formData.consentGiven}
+                          onChange={(e) => setFormData({ ...formData, consentGiven: e.target.checked })}
                           className="w-5 h-5 mt-0.5 rounded border-[#C9CCD1] text-[#2E6DA4] focus:ring-[#2E6DA4] shrink-0"
                         />
                         <span className="text-xs sm:text-sm text-[#55565A] leading-relaxed">
-                          I consent to the collection and secure storage of my registration details by the Gaborone South Constituency Office for Constituency Economic Initiatives analytics, micro-grant evaluation, and communications. *
+                          I consent to the collection and secure storage of my registration details by the Gaborone South Constituency Office for Economic Initiatives analytics, micro-grant evaluation, and communications. *
                         </span>
                       </label>
                     </div>
@@ -1398,7 +918,14 @@ export default function App() {
                     disabled={isSubmitting}
                     className="w-full py-3.5 bg-[#2E6DA4] hover:bg-[#245885] text-white font-bold rounded-xl shadow-md transition cursor-pointer flex items-center justify-center gap-2 text-base min-h-[48px]"
                   >
-                    {isSubmitting ? 'Saving to Database...' : 'Submit Registration'}
+                    {isSubmitting ? (
+                      <div className="flex items-center gap-2">
+                        <RefreshCw className="w-5 h-5 animate-spin" />
+                        <span>Saving Registration...</span>
+                      </div>
+                    ) : (
+                      'Submit Registration'
+                    )}
                   </button>
 
                 </form>
@@ -1421,7 +948,7 @@ export default function App() {
               {[
                 { title: 'Constituency Economic Initiatives Guidelines 2026', size: '2.4 MB', desc: 'Eligibility, grant frameworks, and evaluation rubrics.' },
                 { title: 'Theme Framework & Policy Action Plan 2026', size: '3.1 MB', desc: 'Youth Enterprise, Import Reduction, and Mental Health Strategic Action Plan for Gaborone South.' },
-                { title: 'CIPA Company & NGO Formalization Guide', size: '1.8 MB', desc: 'Fast-track handbook for registering township enterprises and civil organisations in Botswana.' }
+                { title: 'CIPA Company & NGO Formalization Guide', size: '1.8 MB', desc: 'Fast-track handbook for registering township enterprises in Botswana.' }
               ].map((res, i) => (
                 <div key={i} className="bg-white p-5 sm:p-6 rounded-2xl border border-[#C9CCD1] shadow-xs flex flex-col justify-between gap-4">
                   <div>
@@ -1453,21 +980,62 @@ export default function App() {
                   </div>
                   <h3 className="text-2xl font-bold text-[#1F2328]">Admin Portal Login</h3>
                   <p className="text-xs text-[#55565A] leading-relaxed">
-                    Sign in with your authorized administrator Google account to access registrations and analytics.
+                    Sign in with an authorized admin account (registered in admins collection).
                   </p>
                 </div>
 
+                {/* Email / Password Sign In Form */}
+                <form onSubmit={handleEmailAdminLogin} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#1F2328] mb-1">Admin Email Address</label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="admin@example.com"
+                      value={adminEmailInput}
+                      onChange={(e) => setAdminEmailInput(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-white border border-[#C9CCD1] rounded-xl text-sm text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[44px]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#1F2328] mb-1">Password</label>
+                    <input
+                      type="password"
+                      required
+                      placeholder="••••••••"
+                      value={adminPasswordInput}
+                      onChange={(e) => setAdminPasswordInput(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-white border border-[#C9CCD1] rounded-xl text-sm text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[44px]"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full py-3 bg-[#2E6DA4] hover:bg-[#245885] text-white font-bold rounded-xl shadow-xs transition flex items-center justify-center gap-2 cursor-pointer min-h-[44px] text-sm disabled:opacity-60"
+                  >
+                    {authLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : 'Sign In with Password'}
+                  </button>
+                </form>
+
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-[#C9CCD1]"></div>
+                  <span className="flex-shrink mx-3 text-xs text-[#55565A] font-semibold uppercase">Or</span>
+                  <div className="flex-grow border-t border-[#C9CCD1]"></div>
+                </div>
+
                 {/* Google Sign-In */}
-                <div className="space-y-4 pt-1">
+                <div className="space-y-4">
                   <button
                     type="button"
                     onClick={handleGoogleAdminLogin}
                     disabled={authLoading}
-                    className="w-full py-3.5 px-4 bg-white hover:bg-[#EAF5FC] text-[#1F2328] font-bold rounded-xl border-2 border-[#C9CCD1] hover:border-[#2E6DA4] shadow-xs transition flex items-center justify-center gap-3 cursor-pointer min-h-[50px] disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full py-3 px-4 bg-white hover:bg-[#EAF5FC] text-[#1F2328] font-bold rounded-xl border-2 border-[#C9CCD1] hover:border-[#2E6DA4] shadow-xs transition flex items-center justify-center gap-3 cursor-pointer min-h-[48px] disabled:opacity-60 disabled:cursor-not-allowed text-sm"
                   >
                     {authLoading ? (
                       <div className="flex items-center gap-2">
-                        <RefreshCw className="w-5 h-5 animate-spin text-[#2E6DA4]" />
+                        <RefreshCw className="w-4 h-4 animate-spin text-[#2E6DA4]" />
                         <span>Signing in...</span>
                       </div>
                     ) : (
@@ -1485,14 +1053,14 @@ export default function App() {
 
                   <div className="flex items-center justify-center gap-1.5 text-xs text-[#55565A] text-center">
                     <ShieldCheck className="w-4 h-4 text-[#2E6DA4] shrink-0" />
-                    <span>Restricted to authorized constituency administrators</span>
+                    <span>Restricted to authorized admins in <code className="bg-slate-100 px-1 py-0.5 rounded text-[#2E6DA4] font-mono">admins</code> collection</span>
                   </div>
                 </div>
               </div>
             ) : (
               <div className="space-y-6 sm:space-y-8">
                 
-                {/* Robust Admin Header Card */}
+                {/* Admin Header Card */}
                 <div className="bg-white p-6 sm:p-7 rounded-2xl border border-[#C9CCD1] border-l-8 border-l-[#2E6DA4] shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-5 relative overflow-hidden">
                   <div className="space-y-1.5 z-10">
                     <div className="flex items-center gap-2.5 flex-wrap">
@@ -1505,18 +1073,18 @@ export default function App() {
                       </span>
                       <span className="inline-flex items-center gap-1.5 text-xs text-emerald-700 font-semibold bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
                         <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                        <span>Database Live & Syncing</span>
+                        <span>Live onSnapshot Active</span>
                       </span>
                     </div>
                     <h2 className="text-2xl sm:text-3xl font-extrabold text-[#1F2328] tracking-tight pt-1">
                       Economic Initiatives Admin Dashboard
                     </h2>
                     <p className="text-xs sm:text-sm text-[#55565A]">
-                      Centralized command center for managing constituency registrations, PDF analytics, and report exports.
+                      Live streaming records from collection <code className="bg-slate-100 px-1 py-0.5 rounded text-[#2E6DA4] font-mono">registrations</code>.
                     </p>
                   </div>
 
-                  {/* Red Logout Button on the Right */}
+                  {/* Logout Button */}
                   <div className="flex items-center gap-2.5 z-10 shrink-0">
                     <button
                       onClick={handleAdminLogout}
@@ -1530,154 +1098,97 @@ export default function App() {
                 </div>
 
                 {/* Stat Cards Stack */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 sm:gap-6">
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#2E6DA4] shadow-2xs hover:shadow-xs transition-shadow">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#2E6DA4] shadow-2xs">
                     <div className="flex items-center justify-between text-xs font-bold text-[#55565A] uppercase tracking-wider">
                       <span>Total Registrations</span>
                       <Users className="w-4 h-4 text-[#2E6DA4]" />
                     </div>
                     <div className="text-2xl sm:text-3xl font-black text-[#2E6DA4] mt-2">{totalCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1 font-medium">Live database records</p>
+                    <p className="text-xs text-[#55565A] mt-1 font-medium">Live onSnapshot records</p>
                   </div>
 
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#72BEE7] shadow-2xs hover:shadow-xs transition-shadow">
+                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-indigo-500 shadow-2xs">
+                    <div className="flex items-center justify-between text-xs font-bold text-[#55565A] uppercase tracking-wider">
+                      <span>Individuals</span>
+                      <Users className="w-4 h-4 text-indigo-500" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-black text-indigo-600 mt-2">{individualCount}</div>
+                    <p className="text-xs text-[#55565A] mt-1 font-medium">Citizen entries</p>
+                  </div>
+
+                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-teal-500 shadow-2xs">
+                    <div className="flex items-center justify-between text-xs font-bold text-[#55565A] uppercase tracking-wider">
+                      <span>Companies</span>
+                      <Building2 className="w-4 h-4 text-teal-500" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-black text-teal-600 mt-2">{companyCount}</div>
+                    <p className="text-xs text-[#55565A] mt-1 font-medium">Enterprise entries</p>
+                  </div>
+
+                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#72BEE7] shadow-2xs">
                     <div className="flex items-center justify-between text-xs font-bold text-[#55565A] uppercase tracking-wider">
                       <span>Programme Downloads</span>
                       <Download className="w-4 h-4 text-[#72BEE7]" />
                     </div>
                     <div className="text-2xl sm:text-3xl font-black text-[#2E6DA4] mt-2">{programmeDownloadsCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1 font-medium">PDF downloads tracked live</p>
-                  </div>
-
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-sky-500 shadow-2xs hover:shadow-xs transition-shadow">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-[#55565A] uppercase tracking-wider">Individuals</span>
-                      <span className="text-xs font-bold bg-[#EAF5FC] text-[#2E6DA4] px-2 py-0.5 rounded border border-[#72BEE7]/40">
-                        {totalCount > 0 ? Math.round((individualCount / totalCount) * 100) : 0}%
-                      </span>
-                    </div>
-                    <div className="text-2xl sm:text-3xl font-black text-[#1F2328] mt-2">{individualCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1 font-medium">Youth & individual delegates</p>
-                  </div>
-
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#2E6DA4] shadow-2xs hover:shadow-xs transition-shadow">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-[#55565A] uppercase tracking-wider">Companies</span>
-                      <span className="text-xs font-bold bg-[#2E6DA4]/10 text-[#2E6DA4] px-2 py-0.5 rounded border border-[#2E6DA4]/30">
-                        {totalCount > 0 ? Math.round((companyCount / totalCount) * 100) : 0}%
-                      </span>
-                    </div>
-                    <div className="text-2xl sm:text-3xl font-black text-[#2E6DA4] mt-2">{companyCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1 font-medium">Private businesses & startups</p>
-                  </div>
-
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-indigo-600 shadow-2xs hover:shadow-xs transition-shadow sm:col-span-2 lg:col-span-1">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-[#55565A] uppercase tracking-wider">Institutions & Orgs</span>
-                      <span className="text-xs font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-200">
-                        {totalCount > 0 ? Math.round(((institutionCount + organisationCount) / totalCount) * 100) : 0}%
-                      </span>
-                    </div>
-                    <div className="text-2xl sm:text-3xl font-black text-indigo-700 mt-2">{institutionCount + organisationCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1 font-medium">{institutionCount} Inst., {organisationCount} Orgs</p>
+                    <p className="text-xs text-[#55565A] mt-1 font-medium">Background stat counter</p>
                   </div>
                 </div>
 
-                {/* Multi-Segmented Ratio Progress Bar */}
-                <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] shadow-xs space-y-2">
-                  <div className="flex justify-between items-center text-xs font-semibold text-[#55565A]">
-                    <span>Category Representation Distribution</span>
-                    <span>{totalCount} Total Entries</span>
-                  </div>
-                  <div className="w-full bg-[#EAF5FC] h-3.5 rounded-full overflow-hidden flex border border-[#C9CCD1]/60">
-                    <div className="bg-[#72BEE7] h-full transition-all duration-500" style={{ width: `${totalCount > 0 ? (individualCount / totalCount) * 100 : 25}%` }} title={`Individuals: ${individualCount}`}></div>
-                    <div className="bg-[#2E6DA4] h-full transition-all duration-500" style={{ width: `${totalCount > 0 ? (companyCount / totalCount) * 100 : 25}%` }} title={`Companies: ${companyCount}`}></div>
-                    <div className="bg-indigo-600 h-full transition-all duration-500" style={{ width: `${totalCount > 0 ? (institutionCount / totalCount) * 100 : 25}%` }} title={`Institutions: ${institutionCount}`}></div>
-                    <div className="bg-emerald-600 h-full transition-all duration-500" style={{ width: `${totalCount > 0 ? (organisationCount / totalCount) * 100 : 25}%` }} title={`Organisations: ${organisationCount}`}></div>
-                  </div>
-                  <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs pt-1">
-                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-[#72BEE7]"></span> Individuals ({individualCount})</span>
-                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-[#2E6DA4]"></span> Companies ({companyCount})</span>
-                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-indigo-600"></span> Institutions ({institutionCount})</span>
-                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-emerald-600"></span> Organisations ({organisationCount})</span>
-                  </div>
-                </div>
-
-                {/* Responsive Sector Horizontal Bars */}
-                <div className="bg-white p-5 sm:p-6 rounded-2xl border border-[#C9CCD1] shadow-xs space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-base sm:text-lg font-bold text-[#1F2328]">Sector Distribution</h3>
-                      <p className="text-xs text-[#55565A]">Live breakdown across Companies, Institutions & Organisations</p>
-                    </div>
-                    <span className="text-xs font-bold bg-[#EAF5FC] text-[#2E6DA4] px-3 py-1 rounded-full border border-[#72BEE7]/40">
-                      Live Chart
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-3 pt-2">
-                    {sectorCounts.map(({ sector, count }) => {
-                      const percentage = Math.round((count / maxSectorCount) * 100);
-                      const isTopSector = count > 0 && count === maxSectorCount;
-
-                      return (
-                        <div key={sector} className="space-y-1">
-                          <div className="flex items-center justify-between text-xs font-semibold">
-                            <span className={isTopSector ? 'text-[#2E6DA4] font-bold' : 'text-[#1F2328]'}>{sector}</span>
-                            <span className={isTopSector ? 'text-[#2E6DA4] font-bold' : 'text-[#55565A]'}>{count} registered</span>
-                          </div>
-                          <div className="w-full bg-[#EAF5FC] h-3.5 rounded-full overflow-hidden border border-[#C9CCD1]/50">
-                            <div 
-                              className={`h-full transition-all duration-500 rounded-full ${isTopSector ? 'bg-[#2E6DA4]' : 'bg-[#72BEE7]'}`}
-                              style={{ width: `${Math.max(percentage, count > 0 ? 8 : 0)}%` }}
-                            ></div>
-                          </div>
+                {/* Sector Breakdown Chart */}
+                <div className="bg-white p-5 sm:p-6 rounded-2xl border border-[#C9CCD1] shadow-2xs space-y-4">
+                  <h3 className="text-base font-bold text-[#1F2328] flex items-center gap-2">
+                    <TrendingUp className="w-5 h-5 text-[#2E6DA4]" />
+                    <span>Sector Breakdown</span>
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {sectorCounts.map(s => (
+                      <div key={s.sector} className="bg-[#EAF5FC]/50 p-3 rounded-xl border border-[#C9CCD1]/60 space-y-1">
+                        <div className="flex justify-between text-xs font-bold">
+                          <span className="text-[#1F2328]">{s.sector}</span>
+                          <span className="text-[#2E6DA4]">{s.count}</span>
                         </div>
-                      );
-                    })}
+                        <div className="w-full bg-white h-2 rounded-full overflow-hidden border border-[#C9CCD1]/40">
+                          <div 
+                            className="bg-[#2E6DA4] h-full rounded-full transition-all duration-500"
+                            style={{ width: `${(s.count / maxSectorCount) * 100}%` }}
+                          ></div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
-                {/* Search & Collapsible Filters for Mobile */}
-                <div className="bg-white p-4 rounded-2xl border border-[#C9CCD1] space-y-3 shadow-2xs">
-                  <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
-                    <div className="relative w-full sm:w-80">
-                      <Search className="w-4 h-4 text-[#55565A] absolute left-3.5 top-3.5" />
+                {/* Search & Filters */}
+                <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] shadow-2xs space-y-4">
+                  <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
+                    <div className="relative flex-1">
+                      <Search className="w-5 h-5 text-[#55565A] absolute left-3.5 top-1/2 -translate-y-1/2" />
                       <input
                         type="text"
-                        placeholder="Search name, phone, email..."
+                        placeholder="Search by Name, Company, Email, or Phone..."
                         value={adminSearch}
                         onChange={(e) => setAdminSearch(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2.5 bg-white border border-[#C9CCD1] rounded-xl text-sm text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[44px]"
+                        className="w-full pl-10 pr-4 py-2.5 bg-white border border-[#C9CCD1] rounded-xl text-sm focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[44px]"
                       />
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => setShowFiltersMobile(!showFiltersMobile)}
-                      className="sm:hidden w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-[#EAF5FC] border border-[#C9CCD1] text-[#2E6DA4] font-bold text-xs rounded-xl min-h-[44px]"
-                    >
-                      <SlidersHorizontal className="w-4 h-4 text-[#2E6DA4]" />
-                      <span>{showFiltersMobile ? 'Hide Filter Controls' : 'Show Filter Controls'}</span>
-                    </button>
-
-                    <div className="hidden sm:flex flex-wrap gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <select
                         value={filterType}
                         onChange={(e) => setFilterType(e.target.value)}
-                        className="px-3 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] focus:border-[#2E6DA4] min-h-[40px]"
+                        className="px-3 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] min-h-[40px]"
                       >
-                        <option value="all">All Categories</option>
-                        <option value="individual">Individuals Only</option>
-                        <option value="company">Companies Only</option>
-                        <option value="institution">Institutions Only</option>
-                        <option value="organisation">Organisations Only</option>
+                        <option value="all">All Types</option>
+                        <option value="individual">Individual</option>
+                        <option value="company">Company</option>
                       </select>
 
                       <select
                         value={filterWard}
                         onChange={(e) => setFilterWard(e.target.value)}
-                        className="px-3 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] focus:border-[#2E6DA4] min-h-[40px]"
+                        className="px-3 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] min-h-[40px]"
                       >
                         <option value="all">All Wards</option>
                         {WARDS.map(w => <option key={w} value={w}>{w}</option>)}
@@ -1686,143 +1197,34 @@ export default function App() {
                       <select
                         value={filterSector}
                         onChange={(e) => setFilterSector(e.target.value)}
-                        className="px-3 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] focus:border-[#2E6DA4] min-h-[40px]"
+                        className="px-3 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] min-h-[40px]"
                       >
                         <option value="all">All Sectors</option>
                         {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
+
+                      <button
+                        onClick={exportToCSV}
+                        className="bg-[#2E6DA4] hover:bg-[#245885] text-white px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer min-h-[40px] shadow-2xs"
+                      >
+                        <Download className="w-4 h-4" />
+                        <span>Export CSV</span>
+                      </button>
                     </div>
                   </div>
 
-                  {/* Collapsible Mobile Filters */}
-                  {showFiltersMobile && (
-                    <div className="sm:hidden pt-3 border-t border-[#C9CCD1] grid grid-cols-1 gap-2 animate-fade-in">
-                      <div>
-                        <label className="block text-[11px] font-bold text-[#55565A] mb-1">Category</label>
-                        <select
-                          value={filterType}
-                          onChange={(e) => setFilterType(e.target.value)}
-                          className="w-full px-3 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] min-h-[44px]"
-                        >
-                          <option value="all">All Categories</option>
-                          <option value="individual">Individuals Only</option>
-                          <option value="company">Companies Only</option>
-                          <option value="institution">Institutions Only</option>
-                          <option value="organisation">Organisations Only</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-bold text-[#55565A] mb-1">Ward</label>
-                        <select
-                          value={filterWard}
-                          onChange={(e) => setFilterWard(e.target.value)}
-                          className="w-full px-3 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] min-h-[44px]"
-                        >
-                          <option value="all">All Wards</option>
-                          {WARDS.map(w => <option key={w} value={w}>{w}</option>)}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-bold text-[#55565A] mb-1">Sector</label>
-                        <select
-                          value={filterSector}
-                          onChange={(e) => setFilterSector(e.target.value)}
-                          className="w-full px-3 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] min-h-[44px]"
-                        >
-                          <option value="all">All Sectors</option>
-                          {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Mobile View: Stacked Cards View (block md:hidden) */}
-                <div className="block md:hidden space-y-4">
-                  {filteredRegistrations.length === 0 ? (
-                    <div className="bg-white p-6 rounded-2xl border border-[#C9CCD1] text-center text-[#55565A] text-sm">
-                      No registrations match the selected filters.
-                    </div>
-                  ) : (
-                    filteredRegistrations.map((r, idx) => (
-                      <div key={r.id || idx} className="bg-white p-5 rounded-2xl border border-[#C9CCD1] shadow-xs space-y-3">
-                        <div className="flex items-center justify-between border-b border-[#C9CCD1]/60 pb-2 gap-2 flex-wrap">
-                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                            r.type === 'individual' ? 'bg-[#EAF5FC] text-[#2E6DA4] border border-[#72BEE7]/40' :
-                            r.type === 'company' ? 'bg-[#2E6DA4]/10 text-[#2E6DA4] border border-[#2E6DA4]/30' :
-                            r.type === 'institution' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
-                            'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                          }`}>
-                            {r.type}
-                          </span>
-                          <span className="font-mono text-[10px] font-bold text-[#2E6DA4] bg-[#EAF5FC] px-2 py-0.5 rounded border border-[#72BEE7]/50">
-                            {r.id}
-                          </span>
-                          <span className="text-xs text-[#55565A] font-medium ml-auto">{r.ward}</span>
-                        </div>
-
-                        <div>
-                          <h4 className="font-bold text-[#1F2328] text-base">
-                            {r.type === 'individual' ? r.name : r.companyName}
-                          </h4>
-                          {r.contactPerson && (
-                            <p className="text-xs text-[#55565A] mt-0.5">Contact: {r.contactPerson}</p>
-                          )}
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2 text-xs bg-[#EAF5FC]/60 p-3 rounded-xl border border-[#C9CCD1]/40">
-                          <div>
-                            <span className="text-[#55565A] block text-[10px] font-semibold uppercase">Phone</span>
-                            <span className="font-medium text-[#1F2328]">{r.phone}</span>
-                          </div>
-                          <div>
-                            <span className="text-[#55565A] block text-[10px] font-semibold uppercase">
-                              {r.type === 'individual' ? 'ID Number' : 'Plot Number'}
-                            </span>
-                            <span className="font-medium text-[#1F2328]">
-                              {r.type === 'individual' ? (r.idNumber || 'N/A') : (r.plotNumber || 'N/A')}
-                            </span>
-                          </div>
-                          <div className="col-span-2 pt-1">
-                            <span className="text-[#55565A] block text-[10px] font-semibold uppercase">Email</span>
-                            <span className="font-medium text-[#1F2328] break-all">{r.email}</span>
-                          </div>
-                        </div>
-
-                        <div className="text-xs space-y-1">
-                          <div>
-                            <span className="font-semibold text-[#1F2328]">
-                              {r.type === 'individual' ? 'Profession: ' : 'Sector: '}
-                            </span>
-                            <span className="text-[#55565A]">{r.type === 'individual' ? r.profession : r.sector}</span>
-                          </div>
-                          <div>
-                            <span className="font-semibold text-[#1F2328]">
-                              {r.type === 'individual' ? 'Skills: ' : 'Services: '}
-                            </span>
-                            <span className="text-[#55565A]">{r.type === 'individual' ? r.skills : r.goodsAndServices}</span>
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                {/* Tablet / Desktop View: Registrations Table (hidden md:block) */}
-                <div className="hidden md:block bg-white rounded-2xl border border-[#C9CCD1] shadow-xs overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-[#EAF5FC] text-[#1F2328] border-b border-[#C9CCD1] uppercase font-bold">
+                  {/* Registrations Table */}
+                  <div className="overflow-x-auto border border-[#C9CCD1] rounded-xl">
+                    <table className="w-full text-left text-xs text-[#1F2328]">
+                      <thead className="bg-[#EAF5FC] text-[#2E6DA4] font-bold border-b border-[#C9CCD1]">
                         <tr>
-                          <th className="p-4">Reference / Doc ID</th>
-                          <th className="p-4">Type</th>
-                          <th className="p-4">Name / Entity</th>
-                          <th className="p-4">Contact / Phone</th>
-                          <th className="p-4">Ward / ID or Plot</th>
-                          <th className="p-4">Profession / Sector</th>
-                          <th className="p-4">Skills / Details & Mandate</th>
+                          <th className="p-3">Doc ID</th>
+                          <th className="p-3">Type</th>
+                          <th className="p-3">Full Name / Company</th>
+                          <th className="p-3">Contact</th>
+                          <th className="p-3">Ward</th>
+                          <th className="p-3">Profession / Sector</th>
+                          <th className="p-3">Skills / Services</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#C9CCD1]">
@@ -1835,45 +1237,16 @@ export default function App() {
                         ) : (
                           filteredRegistrations.map((r, idx) => (
                             <tr key={r.id || idx} className="hover:bg-[#EAF5FC]/50 transition-colors">
-                              <td className="p-4 font-mono font-bold text-xs text-[#2E6DA4] whitespace-nowrap">
-                                <span className="bg-[#EAF5FC] px-2.5 py-1 rounded-lg border border-[#72BEE7]/50 inline-block shadow-2xs">
-                                  {r.id}
-                                </span>
-                              </td>
-                              <td className="p-4">
-                                <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                                  r.type === 'individual' ? 'bg-[#EAF5FC] text-[#2E6DA4] border border-[#72BEE7]/40' :
-                                  r.type === 'company' ? 'bg-[#2E6DA4]/10 text-[#2E6DA4] border border-[#2E6DA4]/30' :
-                                  r.type === 'institution' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
-                                  'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                }`}>
-                                  {r.type}
-                                </span>
-                              </td>
-                              <td className="p-4 font-bold text-[#1F2328]">
-                                {r.type === 'individual' ? r.name : r.companyName}
-                                {r.contactPerson && <span className="block text-[10px] text-[#55565A]">Contact: {r.contactPerson}</span>}
-                              </td>
-                              <td className="p-4 text-[#1F2328]">
+                              <td className="p-3 font-mono font-bold text-[#2E6DA4] select-all">{r.id}</td>
+                              <td className="p-3 uppercase font-semibold text-[10px]">{r.type}</td>
+                              <td className="p-3 font-bold">{r.type === 'individual' ? r.fullName : r.companyName}</td>
+                              <td className="p-3 space-y-0.5">
                                 <div>{r.phone}</div>
                                 <div className="text-[10px] text-[#55565A]">{r.email}</div>
                               </td>
-                              <td className="p-4 text-[#1F2328]">
-                                <div>{r.ward}</div>
-                                <div className="text-[10px] text-[#55565A]">
-                                  {r.type === 'individual' 
-                                    ? (r.idNumber ? `ID: ${r.idNumber}` : (r.plotNumber ? `Plot: ${r.plotNumber}` : ''))
-                                    : (r.plotNumber ? `Plot: ${r.plotNumber}` : (r.idNumber ? `ID: ${r.idNumber}` : ''))
-                                  }
-                                </div>
-                              </td>
-                              <td className="p-4 text-[#1F2328]">
-                                {r.type === 'individual' ? r.profession : r.sector}
-                                {r.numberOfEmployees && <span className="block text-[10px] text-[#55565A]">{r.numberOfEmployees} staff/members</span>}
-                              </td>
-                              <td className="p-4 text-[#55565A] max-w-xs truncate">
-                                {r.type === 'individual' ? r.skills : r.goodsAndServices}
-                              </td>
+                              <td className="p-3">{r.ward}</td>
+                              <td className="p-3">{r.type === 'individual' ? r.profession : r.sector}</td>
+                              <td className="p-3 text-[#55565A]">{r.skillsOrServices || '-'}</td>
                             </tr>
                           ))
                         )}
@@ -1889,54 +1262,15 @@ export default function App() {
 
       </main>
 
-      {/* Footer on clean white background */}
-      <footer className="bg-white text-[#1F2328] mt-12 sm:mt-16 border-t border-[#C9CCD1]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 mb-8">
-            <div className="space-y-3">
-              <img 
-                src="/assets/aistudio/gaborone-south-logo-transparent_07b83a00.png" 
-                alt="Gaborone South Constituency Office"
-                className="h-10 sm:h-12 w-auto object-contain"
-              />
-              <p className="text-xs text-[#55565A] leading-relaxed">
-                Gaborone South Constituency Economic Initiatives — Empowering the next generation of township entrepreneurs, innovators, institutions, and civic organisations under the theme: <span className="font-semibold text-[#1F2328]">“Youth at the Centre of a Thriving Economy, Reduced Import Bill and Healthy Minds”</span>.
-              </p>
-            </div>
-
-            <div>
-              <h4 className="text-xs sm:text-sm font-bold text-[#2E6DA4] uppercase tracking-wider mb-3">Quick Navigation</h4>
-              <ul className="space-y-2 text-xs text-[#55565A]">
-                <li><button onClick={() => setActiveTab('overview')} className="hover:text-[#2E6DA4] cursor-pointer transition-colors min-h-[32px] flex items-center">Overview & Stats</button></li>
-                <li><button onClick={() => { setActiveTab('overview'); setTimeout(() => document.getElementById('programme-section')?.scrollIntoView({ behavior: 'smooth' }), 100); }} className="hover:text-[#2E6DA4] cursor-pointer transition-colors min-h-[32px] flex items-center">Event Programme</button></li>
-                <li><button onClick={() => setActiveTab('register')} className="hover:text-[#2E6DA4] cursor-pointer transition-colors min-h-[32px] flex items-center">Registration Form</button></li>
-                <li><button onClick={() => setActiveTab('resources')} className="hover:text-[#2E6DA4] cursor-pointer transition-colors min-h-[32px] flex items-center">Resource Library</button></li>
-                <li><button onClick={() => setActiveTab('admin')} className="hover:text-[#2E6DA4] cursor-pointer transition-colors min-h-[32px] flex items-center">Admin Dashboard</button></li>
-              </ul>
-            </div>
-
-            <div>
-              <h4 className="text-xs sm:text-sm font-bold text-[#2E6DA4] uppercase tracking-wider mb-3">Venues & Precincts</h4>
-              <ul className="space-y-2 text-xs text-[#55565A]">
-                <li>Babusi Community Hall (Main Arena)</li>
-                <li>Tsholofelo Park Hall</li>
-                <li>Broadhurst Innovation Center</li>
-                <li>Block 3 Constituency Office</li>
-              </ul>
-            </div>
-
-            <div>
-              <h4 className="text-xs sm:text-sm font-bold text-[#2E6DA4] uppercase tracking-wider mb-3">Secretariat Support</h4>
-              <p className="text-xs text-[#55565A] mb-2">Need assistance with your registration?</p>
-              <p className="text-xs font-semibold text-[#1F2328]">+267 391 2026</p>
-              <p className="text-xs text-[#55565A] mt-1">initiatives@gaboronesouth.gov.bw</p>
-            </div>
-          </div>
-
-          <div className="border-t border-[#C9CCD1] pt-6 flex flex-col sm:flex-row items-center justify-between text-xs text-[#55565A] gap-2">
-            <p>© 2026 Gaborone South Constituency Office. All rights reserved.</p>
-            <p className="text-center sm:text-right font-medium text-[#2E6DA4]">Developed by Quinton @ IfThenElse (+267 72488754)</p>
-          </div>
+      {/* Footer */}
+      <footer className="bg-[#245885] text-white py-8 border-t border-white/10 mt-auto">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center space-y-2">
+          <p className="text-xs sm:text-sm font-semibold">
+            Gaborone South Constituency Economic Initiatives Portal
+          </p>
+          <p className="text-[11px] text-white/70">
+            Dedicated to Youth Empowerment, reduced import reliance, and healthy minds.
+          </p>
         </div>
       </footer>
 

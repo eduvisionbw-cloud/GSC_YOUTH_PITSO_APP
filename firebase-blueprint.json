@@ -2,48 +2,58 @@
   "entities": {
     "Registration": {
       "title": "Registration",
-      "description": "Youth Pitso individual or company registration",
+      "description": "Gaborone South Economic Initiatives Youth Pitso registration entry",
       "type": "object",
       "properties": {
-        "type": { "type": "string", "enum": ["individual", "company", "institution", "organisation"] },
-        "name": { "type": "string", "maxLength": 150 },
+        "type": { "type": "string", "enum": ["individual", "company"] },
+        "fullName": { "type": "string", "maxLength": 150 },
         "companyName": { "type": "string", "maxLength": 150 },
         "contactPerson": { "type": "string", "maxLength": 150 },
-        "phone": { "type": "string", "pattern": "^\\+267\\d{7,8}$" },
+        "phone": { "type": "string", "minLength": 7, "maxLength": 25 },
         "email": { "type": "string", "format": "email" },
-        "ward": { "type": "string", "enum": ["Babusi", "Boitshoko", "Bontleng", "Dilalelo", "Mophato", "Old Industrial", "Old Naledi", "Selemela", "Village", "White City", "Other"] },
+        "ward": { "type": "string", "maxLength": 100 },
         "plotNumber": { "type": "string", "maxLength": 50 },
-        "idNumber": { "type": "string", "maxLength": 50 },
         "profession": { "type": "string", "maxLength": 100 },
-        "sector": { "type": "string", "enum": ["Services", "Retail", "Wholesale", "Education", "Construction", "Manufacturing", "Mining", "Agriculture", "ICT", "Public sector", "Other"] },
-        "skills": { "type": "string", "maxLength": 500 },
-        "goodsAndServices": { "type": "string", "maxLength": 500 },
-        "numberOfEmployees": { "type": "number", "minimum": 0 },
-        "consent": { "type": "boolean" },
-        "id": { "type": "string", "maxLength": 100 },
-        "ticketNumber": { "type": "string", "maxLength": 100 },
+        "sector": { "type": "string", "maxLength": 100 },
+        "skillsOrServices": { "type": "string", "maxLength": 1000 },
+        "employeeCount": { "type": "number", "minimum": 0 },
+        "consentGiven": { "type": "boolean" },
         "createdAt": { "type": "string" }
       },
-      "required": ["type", "phone", "email", "ward", "consent"]
+      "required": ["type", "phone", "ward", "consentGiven"]
     },
-    "Stat": {
-      "title": "Stat",
-      "description": "Application statistics counter",
+    "ProgrammeStat": {
+      "title": "ProgrammeStat",
+      "description": "Counter for programme downloads",
       "type": "object",
       "properties": {
-        "count": { "type": "number" }
+        "count": { "type": "number", "minimum": 0 }
       },
       "required": ["count"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "Admin authorization entry indexed by lowercase email",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["email"]
     }
   },
   "firestore": {
     "/registrations/{registrationId}": {
       "schema": "Registration",
-      "description": "Store registrations with recognizable document IDs following convention REG-2026-[CATEGORY]-[PHONE] (e.g. REG-2026-INDIVIDUAL-26771234567)"
+      "description": "Public registrations collection using Firestore auto document IDs"
     },
-    "/stats/{statId}": {
-      "schema": "Stat",
-      "description": "Application counters like programme downloads"
+    "/programmeStats/{statDocId}": {
+      "schema": "ProgrammeStat",
+      "description": "Download statistics collection with document ID 'downloads'"
+    },
+    "/admins/{adminEmail}": {
+      "schema": "Admin",
+      "description": "Authorized administrator whitelist indexed by document ID matching lowercase email address"
     }
   }
 }

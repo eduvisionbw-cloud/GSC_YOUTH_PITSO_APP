@@ -5,34 +5,40 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
-import { initializeApp, getApps } from 'firebase/app';
-import { 
-  getFirestore, doc, setDoc, getDoc, collection, getDocs, 
-  query, increment, serverTimestamp 
-} from 'firebase/firestore';
-
-dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 async function startServer() {
   const app = express();
   app.use(express.json());
 
-// Initialize Firebase for server operations
-let serverDb: any = null;
-try {
-  const configPath = path.resolve(__dirname, 'firebase-applet-config.json');
-  if (fs.existsSync(configPath)) {
-    const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    const serverApp = getApps().length === 0 
-      ? initializeApp(configData, 'pitso-backend') 
-      : getApps()[0];
-    serverDb = getFirestore(serverApp);
-    console.log('[Server] Firebase Firestore connected to project:', configData.projectId);
+// Helper to serialize JavaScript objects to Firestore REST JSON fields
+function toFirestoreFields(obj: Record<string, any>): Record<string, any> {
+  const fields: Record<string, any> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    if (val === undefined || val === null) continue;
+    if (typeof val === 'string') {
+      fields[key] = { stringValue: val };
+    } else if (typeof val === 'number') {
+      fields[key] = { integerValue: String(Math.floor(val)) };
+    } else if (typeof val === 'boolean') {
+      fields[key] = { booleanValue: val };
+    }
   }
-} catch (fbErr) {
-  console.warn('[Server] Firebase setup notice:', fbErr);
+  return fields;
+}
+
+// Helper to deserialize Firestore REST JSON fields to standard JavaScript object
+function fromFirestoreFields(fields: Record<string, any>): Record<string, any> {
+  const obj: Record<string, any> = {};
+  for (const [key, valObj] of Object.entries(fields)) {
+    if (valObj.stringValue !== undefined) obj[key] = valObj.stringValue;
+    else if (valObj.integerValue !== undefined) obj[key] = Number(valObj.integerValue);
+    else if (valObj.booleanValue !== undefined) obj[key] = valObj.booleanValue;
+    else if (valObj.timestampValue !== undefined) obj[key] = valObj.timestampValue;
+  }
+  return obj;
 }
 
 const PORT = process.env.PORT || 3000;
@@ -41,7 +47,7 @@ const PORT = process.env.PORT || 3000;
   const apiKey = process.env.GEMINI_API_KEY;
   const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
-  // Direct Registration API Route (guarantees instantaneous saves regardless of browser extensions/adblockers)
+  // Direct Registration API Route (powered by environment variables/secrets)
   app.post('/api/register', async (req, res) => {
     try {
       const data = req.body;
@@ -49,24 +55,37 @@ const PORT = process.env.PORT || 3000;
         return res.status(400).json({ error: 'Missing required registration details' });
       }
 
-      if (!serverDb) {
-        return res.status(503).json({ error: 'Database service not yet initialized on server' });
+      const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
+      const fbApiKey = process.env.VITE_FIREBASE_API_KEY;
+
+      if (!projectId || !fbApiKey) {
+        return res.status(503).json({ error: 'Firebase secrets not configured in environment' });
       }
 
       const categoryTag = String(data.type || 'individual').toUpperCase();
       const phoneDigits = String(data.phone).replace(/\D/g, '');
       const docId = data.id || `REG-2026-${categoryTag}-${phoneDigits}`;
 
-      const payload = {
+      const fields = toFirestoreFields({
         ...data,
         id: docId,
         ticketNumber: docId,
-        createdAt: serverTimestamp()
-      };
+      });
+      fields.createdAt = { timestampValue: new Date().toISOString() };
 
-      const docRef = doc(serverDb, 'registrations', docId);
-      await setDoc(docRef, payload);
-      console.log('[Server] Registration saved successfully:', docId);
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/registrations/${docId}?key=${fbApiKey}`;
+      const response = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields })
+      });
+
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.error?.message || `Firestore REST error (${response.status})`);
+      }
+
+      console.log('[Server] Registration saved successfully to Firestore:', docId);
       res.json({ success: true, id: docId });
     } catch (err: any) {
       console.error('[Server] Registration error:', err);
@@ -77,11 +96,18 @@ const PORT = process.env.PORT || 3000;
   // Programme download statistics
   app.get('/api/stats', async (_, res) => {
     try {
-      if (!serverDb) return res.json({ count: 0 });
-      const statRef = doc(serverDb, 'stats', 'programmeDownloads');
-      const snap = await getDoc(statRef);
-      const count = snap.exists() ? (snap.data().count || 0) : 0;
-      res.json({ count });
+      const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
+      const fbApiKey = process.env.VITE_FIREBASE_API_KEY;
+      if (!projectId || !fbApiKey) return res.json({ count: 0 });
+
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/stats/programmeDownloads?key=${fbApiKey}`;
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        const rawCount = data.fields?.count?.integerValue ?? data.fields?.count?.doubleValue ?? 0;
+        return res.json({ count: Number(rawCount) });
+      }
+      res.json({ count: 0 });
     } catch (e: any) {
       res.json({ count: 0 });
     }
@@ -89,26 +115,52 @@ const PORT = process.env.PORT || 3000;
 
   app.post('/api/stats/download-programme', async (_, res) => {
     try {
-      if (!serverDb) return res.json({ success: false });
-      const statRef = doc(serverDb, 'stats', 'programmeDownloads');
-      await setDoc(statRef, { count: increment(1) }, { merge: true });
-      res.json({ success: true });
+      const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
+      const fbApiKey = process.env.VITE_FIREBASE_API_KEY;
+      if (!projectId || !fbApiKey) return res.json({ success: false });
+
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/stats/programmeDownloads?key=${fbApiKey}`;
+      const getRes = await fetch(url);
+      let currentCount = 0;
+      if (getRes.ok) {
+        const docData = await getRes.json();
+        currentCount = Number(docData.fields?.count?.integerValue || 0);
+      }
+      const newCount = currentCount + 1;
+      await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fields: {
+            count: { integerValue: String(newCount) }
+          }
+        })
+      });
+      res.json({ success: true, count: newCount });
     } catch (e: any) {
       res.status(500).json({ error: e?.message });
     }
   });
 
-  // Admin registrations retrieval fallback
+  // Admin registrations retrieval
   app.get('/api/admin/registrations', async (_, res) => {
     try {
-      if (!serverDb) return res.json([]);
-      const q = query(collection(serverDb, 'registrations'));
-      const snapshot = await getDocs(q);
-      const list: any[] = [];
-      snapshot.forEach((d) => {
-        list.push({ id: d.id, ...d.data() });
-      });
-      res.json(list);
+      const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
+      const fbApiKey = process.env.VITE_FIREBASE_API_KEY;
+      if (!projectId || !fbApiKey) return res.json([]);
+
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/registrations?pageSize=100&key=${fbApiKey}`;
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        const list = (data.documents || []).map((doc: any) => {
+          const item = fromFirestoreFields(doc.fields || {});
+          item.id = doc.name.split('/').pop();
+          return item;
+        });
+        return res.json(list);
+      }
+      res.json([]);
     } catch (err: any) {
       res.status(500).json({ error: err?.message });
     }

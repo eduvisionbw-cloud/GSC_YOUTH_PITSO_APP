@@ -1,46 +1,60 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Default deny-all catch-all
+
+    // Helper function to check if the user's email exists in the admins collection
+    function isAdmin() {
+      return request.auth != null 
+        && request.auth.token.email != null 
+        && exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()));
+    }
+
+    // Helper function to validate public registration payload
+    function isValidRegistration(data) {
+      return data.type in ['individual', 'company']
+        && data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 25
+        && data.ward is string
+        && data.consentGiven == true;
+    }
+
+    // Global default deny-all catch-all
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Helper functions
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    // Validate required fields for public registration creation
-    function isValidRegistration(data) {
-      return data.type in ['individual', 'company', 'institution', 'organisation']
-        && data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 25
-        && data.email is string && data.email.size() <= 150
-        && data.ward is string && data.ward.size() <= 100
-        && data.consent == true;
-    }
-
-    // Registrations collection
+    // 1. Registrations collection
     match /registrations/{registrationId} {
-      // Allow create for anyone with required fields validated
+      // Public create only if type is individual or company, phone is 7-25 chars, ward is string, consentGiven is true
       allow create: if isValidRegistration(request.resource.data);
 
-      // Read, update, and delete only for signed-in admin accounts
-      allow read, update, delete: if isSignedIn();
+      // Read, update, and delete only for admins
+      allow read, update, delete: if isAdmin();
     }
 
-    // Application statistics counters
-    match /stats/{statId} {
-      // stats/programmeDownloads readable by anyone
+    // 2. ProgrammeStats collection
+    match /programmeStats/{statDocId} {
+      // Public read
       allow read: if true;
 
-      // Updatable only by incrementing programmeDownloads counter by 1
-      allow create: if statId == 'programmeDownloads' 
+      // Public increment by 1 only
+      allow create: if statDocId == 'downloads' 
         && request.resource.data.count == 1;
 
-      allow update: if statId == 'programmeDownloads' 
+      allow update: if statDocId == 'downloads' 
         && request.resource.data.count == resource.data.count + 1;
+    }
+
+    // 3. Admins collection
+    match /admins/{adminEmail} {
+      // Readable only by the signed-in user's own email or listing by admins
+      allow get: if request.auth != null 
+        && request.auth.token.email != null 
+        && request.auth.token.email.lower() == adminEmail.lower();
+
+      allow list: if isAdmin();
+
+      // No client writes
+      allow write: if false;
     }
   }
 }
