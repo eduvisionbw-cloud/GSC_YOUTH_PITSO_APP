@@ -167,6 +167,18 @@ export default function App() {
   };
 
   const fetchStats = async () => {
+    // Fetch download stats from API or direct Firestore
+    try {
+      const res = await fetch('/api/stats');
+      if (res.ok) {
+        const data = await res.json();
+        if (typeof data.count === 'number') {
+          setProgrammeDownloadsCount(data.count);
+          return;
+        }
+      }
+    } catch (_) {}
+
     if (!isFirebaseConfigured || !db) return;
     try {
       const docRef = doc(db, 'stats', 'programmeDownloads');
@@ -178,19 +190,24 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      // Gracefully handle network warming / offline state without loud errors
       console.warn('Programme download stats currently unavailable:', err?.message || err);
     }
   };
 
   const handleDownloadProgramme = async () => {
-    if (isFirebaseConfigured && db) {
-      try {
-        const statRef = doc(db, 'stats', 'programmeDownloads');
-        await setDoc(statRef, { count: increment(1) }, { merge: true });
-        setProgrammeDownloadsCount(prev => prev + 1);
-      } catch (err: any) {
-        console.warn('Could not record download stat:', err?.message || err);
+    // Record download stat via API route or client Firestore
+    try {
+      await fetch('/api/stats/download-programme', { method: 'POST' });
+      setProgrammeDownloadsCount(prev => prev + 1);
+    } catch (_) {
+      if (isFirebaseConfigured && db) {
+        try {
+          const statRef = doc(db, 'stats', 'programmeDownloads');
+          await setDoc(statRef, { count: increment(1) }, { merge: true });
+          setProgrammeDownloadsCount(prev => prev + 1);
+        } catch (err: any) {
+          console.warn('Could not record download stat:', err?.message || err);
+        }
       }
     }
     const link = document.createElement('a');
@@ -204,19 +221,28 @@ export default function App() {
 
   // Fetch Registrations for Admin
   const fetchRegistrations = async () => {
-    if (!isFirebaseConfigured) return;
     setIsRefreshingData(true);
     try {
-      const q = query(collection(db, 'registrations'));
-      const snapshot = await getDocs(q);
-      const list: Registration[] = [];
-      snapshot.forEach((docSnap) => {
-        list.push({ id: docSnap.id, ...docSnap.data() } as Registration);
-      });
-      // Sort newest first if createdAt is available
+      let list: Registration[] = [];
+      try {
+        const res = await fetch('/api/admin/registrations');
+        if (res.ok) {
+          list = await res.json();
+        }
+      } catch (_) {}
+
+      if (list.length === 0 && isFirebaseConfigured && db) {
+        const q = query(collection(db, 'registrations'));
+        const snapshot = await getDocs(q);
+        snapshot.forEach((docSnap) => {
+          list.push({ id: docSnap.id, ...docSnap.data() } as Registration);
+        });
+      }
+
+      // Sort newest first
       list.sort((a, b) => {
-        const timeA = a.createdAt?.toMillis?.() || 0;
-        const timeB = b.createdAt?.toMillis?.() || 0;
+        const timeA = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : (a.createdAt?.toMillis?.() || 0);
+        const timeB = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : (b.createdAt?.toMillis?.() || 0);
         return timeB - timeA;
       });
       setRegistrationsList(list);
@@ -294,17 +320,28 @@ export default function App() {
       return;
     }
 
-    // Validate phone number (+267 followed by 7 or 8 digits)
+    // Auto-normalize phone number for Botswana
+    let cleanPhone = formData.phone.trim().replace(/[\s\-\(\)]/g, '');
+    if (cleanPhone.startsWith('00267')) {
+      cleanPhone = '+' + cleanPhone.slice(2);
+    } else if (cleanPhone.startsWith('267')) {
+      cleanPhone = '+' + cleanPhone;
+    } else if (cleanPhone.startsWith('0') && cleanPhone.length >= 8) {
+      cleanPhone = '+267' + cleanPhone.slice(1);
+    } else if (/^\d{7,8}$/.test(cleanPhone)) {
+      cleanPhone = '+267' + cleanPhone;
+    }
+
+    // Validate Botswana phone number (+267 followed by 7 or 8 digits)
     const phoneRegex = /^\+267\d{7,8}$/;
-    const cleanPhone = formData.phone.trim().replace(/\s+/g, '');
     if (!phoneRegex.test(cleanPhone)) {
-      showError('Invalid Botswana phone number. Must start with +267 followed by 7 or 8 digits (e.g. +26771234567).');
+      showError('Please enter a valid Botswana phone number (e.g. 71234567 or +26771234567).');
       return;
     }
 
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(formData.email)) {
+    if (!emailRegex.test(formData.email.trim())) {
       showError('Please enter a valid email address.');
       return;
     }
@@ -312,8 +349,6 @@ export default function App() {
     setIsSubmitting(true);
 
     try {
-      // Human-readable, recognizable document ID format (No random strings!):
-      // Example: REG-2026-INDIVIDUAL-26771234567
       const phoneDigits = cleanPhone.replace(/\D/g, '');
       const categoryTag = regType.toUpperCase();
       let docId = `REG-2026-${categoryTag}-${phoneDigits}`;
@@ -326,7 +361,6 @@ export default function App() {
         email: formData.email.trim(),
         ward: formData.ward,
         consent: formData.consent,
-        createdAt: serverTimestamp()
       };
 
       if (regType === 'individual') {
@@ -343,21 +377,52 @@ export default function App() {
         payload.numberOfEmployees = Number(formData.numberOfEmployees) || 1;
       }
 
-      // Save directly to Firestore with the recognizable document ID
+      // Robust save: Try server API route first (bypasses browser adblockers and websocket blocks)
+      let saved = false;
       try {
-        await setDoc(doc(db, 'registrations', docId), payload);
-      } catch (writeErr: any) {
-        // If the document already exists and updates without auth are restricted,
-        // create a unique recognizable sequence sub-id so the registration is never lost
-        if (writeErr.code === 'permission-denied') {
-          const timestampCode = Date.now().toString().slice(-4);
-          docId = `REG-2026-${categoryTag}-${phoneDigits}-${timestampCode}`;
-          payload.id = docId;
-          payload.ticketNumber = docId;
-          await setDoc(doc(db, 'registrations', docId), payload);
-        } else {
-          throw writeErr;
+        const response = await fetch('/api/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (response.ok) {
+          const resData = await response.json();
+          if (resData.id) {
+            docId = resData.id;
+          }
+          saved = true;
         }
+      } catch (apiErr) {
+        console.warn('API save fallback to client Firestore:', apiErr);
+      }
+
+      // Direct client Firestore fallback if API route didn't complete
+      if (!saved && isFirebaseConfigured && db) {
+        try {
+          await setDoc(doc(db, 'registrations', docId), {
+            ...payload,
+            createdAt: serverTimestamp()
+          });
+          saved = true;
+        } catch (writeErr: any) {
+          if (writeErr.code === 'permission-denied') {
+            const timestampCode = Date.now().toString().slice(-4);
+            docId = `REG-2026-${categoryTag}-${phoneDigits}-${timestampCode}`;
+            payload.id = docId;
+            payload.ticketNumber = docId;
+            await setDoc(doc(db, 'registrations', docId), {
+              ...payload,
+              createdAt: serverTimestamp()
+            });
+            saved = true;
+          } else {
+            throw writeErr;
+          }
+        }
+      }
+
+      if (!saved) {
+        throw new Error('Unable to save registration at this time. Please check your network connection and retry.');
       }
 
       setTicketResult(docId);

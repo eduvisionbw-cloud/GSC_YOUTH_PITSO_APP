@@ -1,12 +1,11 @@
 {
-  "projectId": "gen-lang-client-0547612806",
-  "appId": "1:377731916488:web:051ee3f09f66b811c5fbfd",
-  "apiKey": "AIzaSyDWKVPubZfrZLunVG21K16iMTMJ-Ws2zJ8",
-  "authDomain": "gen-lang-client-0547612806.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-gaboronesouthyou-743cae47-468d-4d72-9cc7-6e7a6ff129d5",
-  "storageBucket": "gen-lang-client-0547612806.firebasestorage.app",
-  "messagingSenderId": "377731916488",
-  "measurementId": "",
-  "oAuthClientId": "377731916488-5q05aaglrieje5h6o6jcuc8kkbuknslg.apps.googleusercontent.com",
-  "recaptchaSiteKey": ""
+  "projectId": "gsc-youth-pitso",
+  "appId": "1:483469835968:web:949d2fb3780a1237dd3725",
+  "apiKey": "AIzaSyDPz8oENMZ0SoLQ8RQ-YHC1u-gthRfru9g",
+  "authDomain": "gsc-youth-pitso.firebaseapp.com",
+  "databaseURL": "https://gsc-youth-pitso-default-rtdb.firebaseio.com",
+  "storageBucket": "gsc-youth-pitso.firebasestorage.app",
+  "messagingSenderId": "483469835968",
+  "measurementId": "G-05SMY8G4W5",
+  "firestoreDatabaseId": "(default)"
 }
