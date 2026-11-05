@@ -3,7 +3,7 @@ import {
   Users, Award, Search, MapPin, 
   Clock, CheckCircle2, Download, Sparkles,
   Building2, ShieldCheck, LogOut, Lock, AlertCircle, Menu, X,
-  TrendingUp, Filter, RefreshCw
+  TrendingUp, Filter, RefreshCw, Landmark, Globe
 } from 'lucide-react';
 import { 
   db, auth, isFirebaseConfigured, mapFirebaseAuthError 
@@ -18,15 +18,16 @@ import {
   signInWithEmailAndPassword
 } from 'firebase/auth';
 
-const WARDS = ['Babusi', 'Boitshoko', 'Bontleng', 'Dilalelo', 'Mophato', 'Old Industrial', 'Old Naledi', 'Selemela', 'Village', 'White City', 'Other'];
-const SECTORS = ['Services', 'Retail', 'Wholesale', 'Education', 'Construction', 'Manufacturing', 'Mining', 'Agriculture', 'ICT', 'Public sector', 'Other'];
+const WARDS = ['Babusi', 'Bontleng', 'Selemela', 'Naledi South', 'Naledi North', 'Naledi Central'];
+const SECTORS = ['Services', 'Retail', 'Wholesale', 'Education', 'Construction', 'Manufacturing', 'Mining', 'Agriculture', 'ICT', 'Public sector', 'NGO / Community Development', 'Other'];
 
-type RegistrationType = 'individual' | 'company';
+type RegistrationType = 'individual' | 'company' | 'institution' | 'organisation';
 
 interface Registration {
   id?: string;
   type: RegistrationType;
   fullName?: string;
+  idNumber?: string;
   companyName?: string;
   contactPerson?: string;
   phone: string;
@@ -69,6 +70,7 @@ export default function App() {
   const [regType, setRegType] = useState<RegistrationType>('individual');
   const [formData, setFormData] = useState({
     fullName: '',
+    idNumber: '',
     companyName: '',
     contactPerson: '',
     phone: '+267',
@@ -328,6 +330,9 @@ export default function App() {
 
       if (regType === 'individual') {
         payload.fullName = formData.fullName.trim();
+        if (formData.idNumber.trim()) {
+          payload.idNumber = formData.idNumber.trim();
+        }
         payload.profession = formData.profession.trim();
         payload.skillsOrServices = formData.skillsOrServices.trim();
       } else {
@@ -375,6 +380,7 @@ export default function App() {
       // Reset form
       setFormData({
         fullName: '',
+        idNumber: '',
         companyName: '',
         contactPerson: '',
         phone: '+267',
@@ -403,8 +409,8 @@ export default function App() {
     }
 
     const headers = [
-      'Document ID', 'Type', 'Full Name / Company', 'Contact Person',
-      'Phone', 'Email', 'Ward', 'Plot Number', 'Profession / Sector',
+      'Document ID', 'Category', 'Full Name / Entity', 'ID Number', 'Contact Person',
+      'Phone', 'Email', 'Ward', 'Plot / Location', 'Profession / Sector',
       'Skills or Services', 'Employee Count', 'Consent Given', 'Created At'
     ];
 
@@ -412,6 +418,7 @@ export default function App() {
       r.id || '',
       r.type,
       r.type === 'individual' ? r.fullName || '' : r.companyName || '',
+      r.idNumber || '-',
       r.contactPerson || '',
       r.phone || '',
       r.email || '',
@@ -444,9 +451,10 @@ export default function App() {
     
     const searchLower = adminSearch.toLowerCase();
     const nameMatch = (r.fullName || r.companyName || '').toLowerCase().includes(searchLower);
+    const idMatch = (r.idNumber || '').toLowerCase().includes(searchLower);
     const phoneMatch = (r.phone || '').toLowerCase().includes(searchLower);
     const emailMatch = (r.email || '').toLowerCase().includes(searchLower);
-    const matchesSearch = !adminSearch || nameMatch || phoneMatch || emailMatch;
+    const matchesSearch = !adminSearch || nameMatch || idMatch || phoneMatch || emailMatch;
 
     return matchesType && matchesWard && matchesSector && matchesSearch;
   });
@@ -454,6 +462,8 @@ export default function App() {
   // Analytics breakdowns
   const individualCount = registrationsList.filter(r => r.type === 'individual').length;
   const companyCount = registrationsList.filter(r => r.type === 'company').length;
+  const institutionCount = registrationsList.filter(r => r.type === 'institution').length;
+  const organisationCount = registrationsList.filter(r => r.type === 'organisation').length;
   const totalCount = registrationsList.length;
 
   const sectorCounts = SECTORS.map(sec => ({
@@ -603,17 +613,12 @@ export default function App() {
 
               <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-16 z-10 w-full">
                 <div className="max-w-3xl space-y-4 sm:space-y-6">
-                  <div className="inline-flex items-center space-x-2 bg-white/10 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/20 text-xs sm:text-sm font-medium">
-                    <Sparkles className="w-4 h-4 text-[#72BEE7]" />
-                    <span>Official Constituency Empowerment Initiative</span>
-                  </div>
-
                   <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight">
                     Youth at the Centre of a Thriving Economy
                   </h1>
 
                   <p className="text-sm sm:text-lg text-white/90 leading-relaxed font-normal">
-                    Gaborone South Constituency Economic Initiatives — Dedicated to enterprise innovation, reduced import reliance, healthy minds, and community growth across Babusi, Bontleng, Old Naledi, White City, and all wards.
+                    Gaborone South Constituency Economic Initiatives — Dedicated to enterprise innovation, reduced import reliance, healthy minds, and community growth across Babusi, Bontleng, Selemela, Naledi South, Naledi North, and Naledi Central.
                   </p>
 
                   <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-2">
@@ -621,7 +626,7 @@ export default function App() {
                       onClick={() => setActiveTab('register')}
                       className="bg-[#72BEE7] hover:bg-[#5aaedc] text-[#1F2328] font-bold px-6 py-3.5 rounded-xl shadow-lg transition cursor-pointer text-center text-sm sm:text-base min-h-[48px] flex items-center justify-center gap-2"
                     >
-                      <span>Register Entry / Company</span>
+                      <span>Register Now!</span>
                     </button>
 
                     <button
@@ -629,7 +634,7 @@ export default function App() {
                       className="bg-white/10 hover:bg-white/20 text-white font-bold px-6 py-3.5 rounded-xl border border-white/30 backdrop-blur-md transition cursor-pointer text-center text-sm sm:text-base min-h-[48px] flex items-center justify-center gap-2"
                     >
                       <Download className="w-4 h-4" />
-                      <span>Download Symposium Programme PDF</span>
+                      <span>Download Programme PDF</span>
                     </button>
                   </div>
                 </div>
@@ -727,13 +732,17 @@ export default function App() {
               ) : (
                 <form onSubmit={handleRegistrationSubmit} className="space-y-6">
                   
-                  {/* Category Segmented Control */}
+                  {/* Category Selection Control */}
                   <div>
-                    <label className="block text-xs font-bold text-[#1F2328] uppercase mb-2">Registration Category *</label>
-                    <div className="grid grid-cols-2 gap-3">
+                    <label className="block text-xs font-bold text-[#1F2328] uppercase mb-2">
+                      Select Registration Category *
+                    </label>
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                       {[
-                        { id: 'individual', label: 'Individual', sub: 'Citizen / Youth', icon: Users },
-                        { id: 'company', label: 'Company / Enterprise', sub: 'Private Business', icon: Building2 }
+                        { id: 'individual', label: 'Individual', sub: 'Citizen / Youth', icon: Users, desc: 'Artisans & youth' },
+                        { id: 'company', label: 'Company', sub: 'Private Business', icon: Building2, desc: 'Enterprises & SMEs' },
+                        { id: 'institution', label: 'Institution', sub: 'Academic / Public', icon: Landmark, desc: 'Colleges & agencies' },
+                        { id: 'organisation', label: 'Organisation', sub: 'NGO / CBO / Trust', icon: Globe, desc: 'Trusts & associations' }
                       ].map(item => {
                         const Icon = item.icon;
                         const isSelected = regType === item.id;
@@ -742,15 +751,15 @@ export default function App() {
                             key={item.id}
                             type="button"
                             onClick={() => setRegType(item.id as RegistrationType)}
-                            className={`p-4 rounded-xl border text-center transition cursor-pointer flex flex-col items-center justify-center gap-1 min-h-[64px] ${
+                            className={`p-3.5 rounded-xl border text-center transition cursor-pointer flex flex-col items-center justify-center gap-1.5 min-h-[76px] ${
                               isSelected 
-                                ? 'bg-[#2E6DA4] text-white border-[#2E6DA4] shadow-xs' 
-                                : 'bg-white text-[#55565A] border-[#C9CCD1] hover:bg-[#EAF5FC]'
+                                ? 'bg-[#2E6DA4] text-white border-[#2E6DA4] ring-2 ring-[#72BEE7] shadow-sm' 
+                                : 'bg-white text-[#55565A] border-[#C9CCD1] hover:bg-[#EAF5FC] hover:border-[#72BEE7]'
                             }`}
                           >
                             <Icon className={`w-5 h-5 ${isSelected ? 'text-white' : 'text-[#2E6DA4]'}`} />
                             <span className="font-bold text-xs sm:text-sm">{item.label}</span>
-                            <span className={`text-[10px] ${isSelected ? 'text-white/80' : 'text-[#55565A]'}`}>{item.sub}</span>
+                            <span className={`text-[10px] ${isSelected ? 'text-white/90' : 'text-[#55565A]'}`}>{item.sub}</span>
                           </button>
                         );
                       })}
@@ -761,36 +770,70 @@ export default function App() {
                     
                     {/* Dynamic Name Fields */}
                     {regType === 'individual' ? (
-                      <div>
-                        <label className="block text-xs font-semibold text-[#1F2328] mb-1">Full Name *</label>
-                        <input
-                          type="text"
-                          required
-                          placeholder="e.g. Kagiso Modisa"
-                          value={formData.fullName}
-                          onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
-                          className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
-                        />
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">Full Name *</label>
+                          <input
+                            type="text"
+                            required
+                            placeholder="e.g. Kagiso Modisa"
+                            value={formData.fullName}
+                            onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
+                            className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">ID Number (Omang / Passport) *</label>
+                          <input
+                            type="text"
+                            required
+                            placeholder="e.g. 123412345 or Passport No."
+                            value={formData.idNumber}
+                            onChange={(e) => setFormData({ ...formData, idNumber: e.target.value })}
+                            className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
+                          />
+                          <span className="text-[11px] text-[#55565A] mt-1 block">National Identity (Omang) or Valid Passport</span>
+                        </div>
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
-                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">Company Name *</label>
+                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">
+                            {regType === 'company' 
+                              ? 'Company / Enterprise Name *' 
+                              : regType === 'institution' 
+                              ? 'Institution Name *' 
+                              : 'Organisation Name *'}
+                          </label>
                           <input
                             type="text"
                             required
-                            placeholder="e.g. Broadhurst Tech Solutions (Pty) Ltd"
+                            placeholder={
+                              regType === 'company'
+                                ? 'e.g. Broadhurst Tech Solutions (Pty) Ltd'
+                                : regType === 'institution'
+                                ? 'e.g. University of Botswana / Gaborone Technical College'
+                                : 'e.g. Botswana Youth Innovation Forum / Bontleng Trust'
+                            }
                             value={formData.companyName}
                             onChange={(e) => setFormData({ ...formData, companyName: e.target.value })}
                             className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
                           />
                         </div>
                         <div>
-                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">Contact Person / Representative *</label>
+                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">
+                            {regType === 'organisation' 
+                              ? 'Contact Person / Coordinator *' 
+                              : 'Contact Person / Representative *'}
+                          </label>
                           <input
                             type="text"
                             required
-                            placeholder="e.g. Lesego Tau"
+                            placeholder={
+                              regType === 'organisation'
+                                ? 'e.g. Kagiso Modisa (Project Lead)'
+                                : 'e.g. Lesego Tau'
+                            }
                             value={formData.contactPerson}
                             onChange={(e) => setFormData({ ...formData, contactPerson: e.target.value })}
                             className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[48px]"
@@ -827,7 +870,7 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Ward & Plot Number */}
+                    {/* Ward & Plot / Campus Number */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
                         <label className="block text-xs font-semibold text-[#1F2328] mb-1">Ward *</label>
@@ -841,18 +884,7 @@ export default function App() {
                       </div>
 
                       <div>
-                        {regType === 'company' ? (
-                          <div>
-                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">Plot Number (Optional)</label>
-                            <input
-                              type="text"
-                              placeholder="e.g. Plot 4521, Broadhurst"
-                              value={formData.plotNumber}
-                              onChange={(e) => setFormData({ ...formData, plotNumber: e.target.value })}
-                              className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
-                            />
-                          </div>
-                        ) : (
+                        {regType === 'individual' ? (
                           <div>
                             <label className="block text-xs font-semibold text-[#1F2328] mb-1">Profession / Occupation *</label>
                             <input
@@ -864,6 +896,29 @@ export default function App() {
                               className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
                             />
                           </div>
+                        ) : (
+                          <div>
+                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">
+                              {regType === 'company' 
+                                ? 'Plot Number / Physical Address (Optional)' 
+                                : regType === 'institution'
+                                ? 'Campus / Plot Location (Optional)'
+                                : 'Office / Center Location (Optional)'}
+                            </label>
+                            <input
+                              type="text"
+                              placeholder={
+                                regType === 'company'
+                                  ? 'e.g. Plot 4521, Broadhurst'
+                                  : regType === 'institution'
+                                  ? 'e.g. Main Campus, Notwane Rd'
+                                  : 'e.g. Community Centre, Bontleng'
+                              }
+                              value={formData.plotNumber}
+                              onChange={(e) => setFormData({ ...formData, plotNumber: e.target.value })}
+                              className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
+                            />
+                          </div>
                         )}
                       </div>
                     </div>
@@ -871,7 +926,7 @@ export default function App() {
                     {/* Category Specific Details */}
                     {regType === 'individual' ? (
                       <div>
-                        <label className="block text-xs font-semibold text-[#1F2328] mb-1">Skills & Talents *</label>
+                        <label className="block text-xs font-semibold text-[#1F2328] mb-1">Skills, Talents & Services *</label>
                         <input
                           type="text"
                           required
@@ -885,7 +940,13 @@ export default function App() {
                       <div className="space-y-4">
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <div>
-                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">Sector *</label>
+                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">
+                              {regType === 'company' 
+                                ? 'Industry Sector *' 
+                                : regType === 'institution' 
+                                ? 'Primary Domain / Sector *' 
+                                : 'Focus Area / Sector *'}
+                            </label>
                             <select
                               value={formData.sector}
                               onChange={(e) => setFormData({ ...formData, sector: e.target.value })}
@@ -895,7 +956,13 @@ export default function App() {
                             </select>
                           </div>
                           <div>
-                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">Employee Count *</label>
+                            <label className="block text-xs font-semibold text-[#1F2328] mb-1">
+                              {regType === 'company' 
+                                ? 'Employee Count *' 
+                                : regType === 'institution' 
+                                ? 'Staff / Student Body Size *' 
+                                : 'Members / Volunteer Count *'}
+                            </label>
                             <input
                               type="number"
                               required
@@ -907,11 +974,23 @@ export default function App() {
                           </div>
                         </div>
                         <div>
-                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">Goods & Services Offered *</label>
+                          <label className="block text-xs font-semibold text-[#1F2328] mb-1">
+                            {regType === 'company' 
+                              ? 'Goods & Services Offered *' 
+                              : regType === 'institution' 
+                              ? 'Programmes & Services Offered *' 
+                              : 'Community Initiatives & Services Offered *'}
+                          </label>
                           <input
                             type="text"
                             required
-                            placeholder="e.g. Solar panel installation, catering supplies"
+                            placeholder={
+                              regType === 'company'
+                                ? 'e.g. Solar panel installation, catering supplies'
+                                : regType === 'institution'
+                                ? 'e.g. Vocational training, youth research incubation, digital labs'
+                                : 'e.g. Youth mentorship, township arts, entrepreneurship drives'
+                            }
                             value={formData.skillsOrServices}
                             onChange={(e) => setFormData({ ...formData, skillsOrServices: e.target.value })}
                             className="w-full px-4 py-3 bg-white border border-[#C9CCD1] rounded-xl text-base text-[#1F2328] min-h-[48px]"
@@ -1123,41 +1202,59 @@ export default function App() {
                 </div>
 
                 {/* Stat Cards Stack */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#2E6DA4] shadow-2xs">
-                    <div className="flex items-center justify-between text-xs font-bold text-[#55565A] uppercase tracking-wider">
-                      <span>Total Registrations</span>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+                  <div className="bg-white p-4 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#2E6DA4] shadow-2xs">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-[#55565A] uppercase tracking-wider">
+                      <span>Total</span>
                       <Users className="w-4 h-4 text-[#2E6DA4]" />
                     </div>
-                    <div className="text-2xl sm:text-3xl font-black text-[#2E6DA4] mt-2">{totalCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1 font-medium">Live onSnapshot records</p>
+                    <div className="text-xl sm:text-2xl font-black text-[#2E6DA4] mt-1.5">{totalCount}</div>
+                    <p className="text-[10px] text-[#55565A] mt-0.5 font-medium">All entries</p>
                   </div>
 
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-indigo-500 shadow-2xs">
-                    <div className="flex items-center justify-between text-xs font-bold text-[#55565A] uppercase tracking-wider">
+                  <div className="bg-white p-4 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-sky-500 shadow-2xs">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-[#55565A] uppercase tracking-wider">
                       <span>Individuals</span>
-                      <Users className="w-4 h-4 text-indigo-500" />
+                      <Users className="w-4 h-4 text-sky-500" />
                     </div>
-                    <div className="text-2xl sm:text-3xl font-black text-indigo-600 mt-2">{individualCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1 font-medium">Citizen entries</p>
+                    <div className="text-xl sm:text-2xl font-black text-sky-600 mt-1.5">{individualCount}</div>
+                    <p className="text-[10px] text-[#55565A] mt-0.5 font-medium">Citizen / Youth</p>
                   </div>
 
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-teal-500 shadow-2xs">
-                    <div className="flex items-center justify-between text-xs font-bold text-[#55565A] uppercase tracking-wider">
+                  <div className="bg-white p-4 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-blue-600 shadow-2xs">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-[#55565A] uppercase tracking-wider">
                       <span>Companies</span>
-                      <Building2 className="w-4 h-4 text-teal-500" />
+                      <Building2 className="w-4 h-4 text-blue-600" />
                     </div>
-                    <div className="text-2xl sm:text-3xl font-black text-teal-600 mt-2">{companyCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1 font-medium">Enterprise entries</p>
+                    <div className="text-xl sm:text-2xl font-black text-blue-700 mt-1.5">{companyCount}</div>
+                    <p className="text-[10px] text-[#55565A] mt-0.5 font-medium">Private SMEs</p>
                   </div>
 
-                  <div className="bg-white p-5 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#72BEE7] shadow-2xs">
-                    <div className="flex items-center justify-between text-xs font-bold text-[#55565A] uppercase tracking-wider">
-                      <span>Programme Downloads</span>
+                  <div className="bg-white p-4 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-purple-500 shadow-2xs">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-[#55565A] uppercase tracking-wider">
+                      <span>Institutions</span>
+                      <Landmark className="w-4 h-4 text-purple-500" />
+                    </div>
+                    <div className="text-xl sm:text-2xl font-black text-purple-600 mt-1.5">{institutionCount}</div>
+                    <p className="text-[10px] text-[#55565A] mt-0.5 font-medium">Academic / Public</p>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-emerald-500 shadow-2xs">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-[#55565A] uppercase tracking-wider">
+                      <span>Organisations</span>
+                      <Globe className="w-4 h-4 text-emerald-500" />
+                    </div>
+                    <div className="text-xl sm:text-2xl font-black text-emerald-600 mt-1.5">{organisationCount}</div>
+                    <p className="text-[10px] text-[#55565A] mt-0.5 font-medium">NGOs / Trusts</p>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-2xl border border-[#C9CCD1] border-t-4 border-t-[#72BEE7] shadow-2xs">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-[#55565A] uppercase tracking-wider">
+                      <span>PDF Downloads</span>
                       <Download className="w-4 h-4 text-[#72BEE7]" />
                     </div>
-                    <div className="text-2xl sm:text-3xl font-black text-[#2E6DA4] mt-2">{programmeDownloadsCount}</div>
-                    <p className="text-xs text-[#55565A] mt-1 font-medium">Background stat counter</p>
+                    <div className="text-xl sm:text-2xl font-black text-[#2E6DA4] mt-1.5">{programmeDownloadsCount}</div>
+                    <p className="text-[10px] text-[#55565A] mt-0.5 font-medium">Programme stats</p>
                   </div>
                 </div>
 
@@ -1192,7 +1289,7 @@ export default function App() {
                       <Search className="w-5 h-5 text-[#55565A] absolute left-3.5 top-1/2 -translate-y-1/2" />
                       <input
                         type="text"
-                        placeholder="Search by Name, Company, Email, or Phone..."
+                        placeholder="Search by Name, Entity, Email, or Phone..."
                         value={adminSearch}
                         onChange={(e) => setAdminSearch(e.target.value)}
                         className="w-full pl-10 pr-4 py-2.5 bg-white border border-[#C9CCD1] rounded-xl text-sm focus:border-[#2E6DA4] focus:ring-2 focus:ring-[#72BEE7]/30 min-h-[44px]"
@@ -1205,9 +1302,11 @@ export default function App() {
                         onChange={(e) => setFilterType(e.target.value)}
                         className="px-3 py-2 bg-white border border-[#C9CCD1] rounded-xl text-xs font-semibold text-[#1F2328] min-h-[40px]"
                       >
-                        <option value="all">All Types</option>
+                        <option value="all">All Categories</option>
                         <option value="individual">Individual</option>
                         <option value="company">Company</option>
+                        <option value="institution">Institution</option>
+                        <option value="organisation">Organisation</option>
                       </select>
 
                       <select
@@ -1244,9 +1343,9 @@ export default function App() {
                       <thead className="bg-[#EAF5FC] text-[#2E6DA4] font-bold border-b border-[#C9CCD1]">
                         <tr>
                           <th className="p-3">Doc ID</th>
-                          <th className="p-3">Type</th>
-                          <th className="p-3">Full Name / Company</th>
-                          <th className="p-3">Contact</th>
+                          <th className="p-3">Category</th>
+                          <th className="p-3">Name / Entity</th>
+                          <th className="p-3">Contact Person</th>
                           <th className="p-3">Ward</th>
                           <th className="p-3">Profession / Sector</th>
                           <th className="p-3">Skills / Services</th>
@@ -1263,10 +1362,33 @@ export default function App() {
                           filteredRegistrations.map((r, idx) => (
                             <tr key={r.id || idx} className="hover:bg-[#EAF5FC]/50 transition-colors">
                               <td className="p-3 font-mono font-bold text-[#2E6DA4] select-all">{r.id}</td>
-                              <td className="p-3 uppercase font-semibold text-[10px]">{r.type}</td>
-                              <td className="p-3 font-bold">{r.type === 'individual' ? r.fullName : r.companyName}</td>
+                              <td className="p-3">
+                                <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase border ${
+                                  r.type === 'individual' 
+                                    ? 'bg-sky-50 text-sky-700 border-sky-300' 
+                                    : r.type === 'company' 
+                                    ? 'bg-blue-50 text-blue-700 border-blue-300' 
+                                    : r.type === 'institution'
+                                    ? 'bg-purple-50 text-purple-700 border-purple-300'
+                                    : 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                                }`}>
+                                  {r.type}
+                                </span>
+                              </td>
+                              <td className="p-3">
+                                <div className="font-bold text-[#1F2328]">
+                                  {r.type === 'individual' ? r.fullName : r.companyName}
+                                </div>
+                                {r.idNumber && (
+                                  <div className="text-[10px] font-mono text-[#55565A] mt-0.5">
+                                    ID: {r.idNumber}
+                                  </div>
+                                )}
+                              </td>
                               <td className="p-3 space-y-0.5">
-                                <div>{r.phone}</div>
+                                <div className="font-medium text-[#1F2328]">
+                                  {r.type === 'individual' ? r.phone : (r.contactPerson || r.phone)}
+                                </div>
                                 <div className="text-[10px] text-[#55565A]">{r.email}</div>
                               </td>
                               <td className="p-3">{r.ward}</td>

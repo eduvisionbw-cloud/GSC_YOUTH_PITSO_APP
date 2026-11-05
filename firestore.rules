@@ -11,7 +11,7 @@ service cloud.firestore {
 
     // Helper function to validate public registration payload
     function isValidRegistration(data) {
-      return data.type in ['individual', 'company']
+      return data.type in ['individual', 'company', 'institution', 'organisation', 'organization']
         && data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 25
         && data.ward is string
         && data.consentGiven == true;

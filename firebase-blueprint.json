@@ -5,8 +5,9 @@
       "description": "Gaborone South Economic Initiatives Youth Pitso registration entry",
       "type": "object",
       "properties": {
-        "type": { "type": "string", "enum": ["individual", "company"] },
+        "type": { "type": "string", "enum": ["individual", "company", "institution", "organisation"] },
         "fullName": { "type": "string", "maxLength": 150 },
+        "idNumber": { "type": "string", "maxLength": 50, "description": "National Identity / Omang or Passport number" },
         "companyName": { "type": "string", "maxLength": 150 },
         "contactPerson": { "type": "string", "maxLength": 150 },
         "phone": { "type": "string", "minLength": 7, "maxLength": 25 },
