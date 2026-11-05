@@ -3,20 +3,49 @@ import { getAuth, Auth } from 'firebase/auth';
 import { initializeFirestore, getFirestore, Firestore } from 'firebase/firestore';
 import firebaseAppletConfig from '../firebase-applet-config.json';
 
+export const CANONICAL_DATABASE_ID =
+  firebaseAppletConfig.firestoreDatabaseId ||
+  'ai-studio-gscyouthpitsoapp-cfe0bcb3-77b5-4a4d-b94d-15922db060db';
+
+function getValidConfigValue(envVal: string | undefined, fallbackVal: string): string {
+  if (!envVal || envVal.includes('your_') || envVal.trim() === '') {
+    return fallbackVal;
+  }
+  return envVal.trim();
+}
+
+function getValidDatabaseId(envVal: string | undefined): string {
+  if (
+    !envVal ||
+    envVal.trim() === '' ||
+    envVal.trim().toLowerCase() === 'default' ||
+    envVal.trim().toLowerCase() === '(default)' ||
+    envVal.trim() === 'undefined' ||
+    envVal.includes('your_')
+  ) {
+    return CANONICAL_DATABASE_ID;
+  }
+  return envVal.trim();
+}
+
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || firebaseAppletConfig.apiKey || '',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseAppletConfig.authDomain || '',
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || firebaseAppletConfig.projectId || '',
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || firebaseAppletConfig.storageBucket || '',
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseAppletConfig.messagingSenderId || '',
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || firebaseAppletConfig.appId || '',
+  apiKey: getValidConfigValue(import.meta.env.VITE_FIREBASE_API_KEY, firebaseAppletConfig.apiKey),
+  authDomain: getValidConfigValue(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN, firebaseAppletConfig.authDomain),
+  projectId: getValidConfigValue(import.meta.env.VITE_FIREBASE_PROJECT_ID, firebaseAppletConfig.projectId),
+  storageBucket: getValidConfigValue(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET, firebaseAppletConfig.storageBucket),
+  messagingSenderId: getValidConfigValue(import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID, firebaseAppletConfig.messagingSenderId),
+  appId: getValidConfigValue(import.meta.env.VITE_FIREBASE_APP_ID, firebaseAppletConfig.appId),
 };
 
-const customDatabaseId = 
-  import.meta.env.VITE_FIREBASE_DATABASE_ID || 
-  firebaseAppletConfig.firestoreDatabaseId;
+const customDatabaseId = getValidDatabaseId(
+  import.meta.env.VITE_FIREBASE_DATABASE_ID || import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID
+);
 
-export const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
+export const isFirebaseConfigured = Boolean(
+  firebaseConfig.apiKey &&
+  firebaseConfig.projectId &&
+  firebaseConfig.projectId !== 'your_project_id'
+);
 
 let appInstance: FirebaseApp;
 let dbInstance: Firestore;
@@ -25,14 +54,10 @@ let authInstance: Auth;
 if (getApps().length === 0) {
   appInstance = initializeApp(firebaseConfig);
   const settings = { experimentalForceLongPolling: true };
-  dbInstance = customDatabaseId && customDatabaseId !== '(default)'
-    ? initializeFirestore(appInstance, settings, customDatabaseId)
-    : initializeFirestore(appInstance, settings);
+  dbInstance = initializeFirestore(appInstance, settings, customDatabaseId);
 } else {
   appInstance = getApps()[0];
-  dbInstance = customDatabaseId && customDatabaseId !== '(default)'
-    ? getFirestore(appInstance, customDatabaseId)
-    : getFirestore(appInstance);
+  dbInstance = getFirestore(appInstance, customDatabaseId);
 }
 
 authInstance = getAuth(appInstance);

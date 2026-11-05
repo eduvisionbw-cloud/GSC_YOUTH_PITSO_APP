@@ -181,9 +181,22 @@ export default function App() {
     }
 
     try {
-      const adminDocRef = doc(db, 'admins', userEmail);
-      const adminSnap = await getDoc(adminDocRef);
-      if (!adminSnap.exists()) {
+      const envAdmins = (import.meta.env.VITE_ADMIN_EMAILS || '')
+        .split(',')
+        .map((e: string) => e.trim().toLowerCase())
+        .filter(Boolean);
+      const isEnvAdmin = envAdmins.includes(userEmail);
+
+      let isAdminDoc = false;
+      try {
+        const adminDocRef = doc(db, 'admins', userEmail);
+        const adminSnap = await getDoc(adminDocRef);
+        isAdminDoc = adminSnap.exists();
+      } catch (e) {
+        console.warn('Admin doc check skipped or offline:', e);
+      }
+
+      if (!isAdminDoc && !isEnvAdmin) {
         await signOut(auth);
         setAdminUser(null);
         showError('Not authorised');
@@ -303,12 +316,6 @@ export default function App() {
 
     setIsSubmitting(true);
 
-    // 15-second timeout guard
-    let timeoutId: any;
-    const timeoutPromise = new Promise((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error('REQUEST_TIMEOUT')), 15000);
-    });
-
     try {
       const payload: any = {
         type: regType,
@@ -334,12 +341,35 @@ export default function App() {
         payload.employeeCount = Number(formData.employeeCount) || 1;
       }
 
-      // Single addDoc to registrations with timeout
-      const addPromise = addDoc(collection(db, 'registrations'), payload);
-      const docRef = (await Promise.race([addPromise, timeoutPromise])) as any;
+      let docId: string | null = null;
 
-      clearTimeout(timeoutId);
-      setTicketResult(docRef.id);
+      // Single addDoc attempt with 5s timeout guard, falling back to REST endpoint if stalled
+      try {
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('REQUEST_TIMEOUT')), 5000)
+        );
+        const addPromise = addDoc(collection(db, 'registrations'), payload);
+        const docRef = (await Promise.race([addPromise, timeoutPromise])) as any;
+        docId = docRef.id;
+      } catch (clientErr: any) {
+        console.warn('Client Firestore SDK save delayed or offline, using API fallback:', clientErr);
+        const restRes = await fetch('/api/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...payload,
+            createdAt: new Date().toISOString()
+          })
+        });
+        if (!restRes.ok) {
+          const errBody = await restRes.json().catch(() => ({}));
+          throw new Error(errBody.error || 'Failed to complete registration save');
+        }
+        const restData = await restRes.json();
+        docId = restData.id;
+      }
+
+      setTicketResult(docId);
       showToast('Registration saved to database successfully!');
 
       // Reset form
@@ -358,13 +388,8 @@ export default function App() {
         consentGiven: false
       });
     } catch (err: any) {
-      clearTimeout(timeoutId);
       console.error('Registration submission error:', err);
-      if (err?.message === 'REQUEST_TIMEOUT') {
-        showError('Registration timed out. Please check your network connection and try again.');
-      } else {
-        showError('Unable to complete registration. Please try again.');
-      }
+      showError(err?.message || 'Unable to complete registration. Please try again.');
     } finally {
       setIsSubmitting(false);
     }

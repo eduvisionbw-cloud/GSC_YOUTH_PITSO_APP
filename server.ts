@@ -5,9 +5,35 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import firebaseAppletConfig from './firebase-applet-config.json' with { type: 'json' };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '.env') });
+
+const CANONICAL_DATABASE_ID =
+  firebaseAppletConfig.firestoreDatabaseId ||
+  'ai-studio-gscyouthpitsoapp-cfe0bcb3-77b5-4a4d-b94d-15922db060db';
+
+function getValidConfigValue(envVal: string | undefined, fallbackVal: string): string {
+  if (!envVal || envVal.includes('your_') || envVal.trim() === '') {
+    return fallbackVal;
+  }
+  return envVal.trim();
+}
+
+function getValidDatabaseId(envVal: string | undefined): string {
+  if (
+    !envVal ||
+    envVal.trim() === '' ||
+    envVal.trim().toLowerCase() === 'default' ||
+    envVal.trim().toLowerCase() === '(default)' ||
+    envVal.trim() === 'undefined' ||
+    envVal.includes('your_')
+  ) {
+    return CANONICAL_DATABASE_ID;
+  }
+  return envVal.trim();
+}
 
 async function startServer() {
   const app = express();
@@ -55,27 +81,23 @@ const PORT = process.env.PORT || 3000;
         return res.status(400).json({ error: 'Missing required registration details' });
       }
 
-      const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
-      const fbApiKey = process.env.VITE_FIREBASE_API_KEY;
-
-      if (!projectId || !fbApiKey) {
-        return res.status(503).json({ error: 'Firebase secrets not configured in environment' });
-      }
-
-      const categoryTag = String(data.type || 'individual').toUpperCase();
-      const phoneDigits = String(data.phone).replace(/\D/g, '');
-      const docId = data.id || `REG-2026-${categoryTag}-${phoneDigits}`;
+      const projectId = getValidConfigValue(process.env.VITE_FIREBASE_PROJECT_ID, firebaseAppletConfig.projectId);
+      const fbApiKey = getValidConfigValue(process.env.VITE_FIREBASE_API_KEY, firebaseAppletConfig.apiKey);
+      const dbId = getValidDatabaseId(process.env.VITE_FIREBASE_DATABASE_ID || process.env.FIREBASE_DATABASE_ID);
 
       const fields = toFirestoreFields({
         ...data,
-        id: docId,
-        ticketNumber: docId,
+        type: data.type || 'individual',
+        ward: data.ward || 'Babusi',
+        phone: data.phone,
+        email: data.email,
+        consentGiven: Boolean(data.consentGiven)
       });
       fields.createdAt = { timestampValue: new Date().toISOString() };
 
-      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/registrations/${docId}?key=${fbApiKey}`;
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${encodeURIComponent(dbId)}/documents/registrations?key=${fbApiKey}`;
       const response = await fetch(url, {
-        method: 'PATCH',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fields })
       });
@@ -84,6 +106,9 @@ const PORT = process.env.PORT || 3000;
         const errJson = await response.json().catch(() => ({}));
         throw new Error(errJson.error?.message || `Firestore REST error (${response.status})`);
       }
+
+      const resDoc = await response.json();
+      const docId = resDoc.name ? resDoc.name.split('/').pop() : `REG-${Date.now()}`;
 
       console.log('[Server] Registration saved successfully to Firestore:', docId);
       res.json({ success: true, id: docId });
@@ -96,11 +121,11 @@ const PORT = process.env.PORT || 3000;
   // Programme download statistics
   app.get('/api/stats', async (_, res) => {
     try {
-      const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
-      const fbApiKey = process.env.VITE_FIREBASE_API_KEY;
-      if (!projectId || !fbApiKey) return res.json({ count: 0 });
+      const projectId = getValidConfigValue(process.env.VITE_FIREBASE_PROJECT_ID, firebaseAppletConfig.projectId);
+      const fbApiKey = getValidConfigValue(process.env.VITE_FIREBASE_API_KEY, firebaseAppletConfig.apiKey);
+      const dbId = getValidDatabaseId(process.env.VITE_FIREBASE_DATABASE_ID || process.env.FIREBASE_DATABASE_ID);
 
-      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/stats/programmeDownloads?key=${fbApiKey}`;
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${encodeURIComponent(dbId)}/documents/programmeStats/downloads?key=${fbApiKey}`;
       const response = await fetch(url);
       if (response.ok) {
         const data = await response.json();
@@ -115,11 +140,11 @@ const PORT = process.env.PORT || 3000;
 
   app.post('/api/stats/download-programme', async (_, res) => {
     try {
-      const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
-      const fbApiKey = process.env.VITE_FIREBASE_API_KEY;
-      if (!projectId || !fbApiKey) return res.json({ success: false });
+      const projectId = getValidConfigValue(process.env.VITE_FIREBASE_PROJECT_ID, firebaseAppletConfig.projectId);
+      const fbApiKey = getValidConfigValue(process.env.VITE_FIREBASE_API_KEY, firebaseAppletConfig.apiKey);
+      const dbId = getValidDatabaseId(process.env.VITE_FIREBASE_DATABASE_ID || process.env.FIREBASE_DATABASE_ID);
 
-      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/stats/programmeDownloads?key=${fbApiKey}`;
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${encodeURIComponent(dbId)}/documents/programmeStats/downloads?key=${fbApiKey}`;
       const getRes = await fetch(url);
       let currentCount = 0;
       if (getRes.ok) {
@@ -145,11 +170,11 @@ const PORT = process.env.PORT || 3000;
   // Admin registrations retrieval
   app.get('/api/admin/registrations', async (_, res) => {
     try {
-      const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
-      const fbApiKey = process.env.VITE_FIREBASE_API_KEY;
-      if (!projectId || !fbApiKey) return res.json([]);
+      const projectId = getValidConfigValue(process.env.VITE_FIREBASE_PROJECT_ID, firebaseAppletConfig.projectId);
+      const fbApiKey = getValidConfigValue(process.env.VITE_FIREBASE_API_KEY, firebaseAppletConfig.apiKey);
+      const dbId = getValidDatabaseId(process.env.VITE_FIREBASE_DATABASE_ID || process.env.FIREBASE_DATABASE_ID);
 
-      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/registrations?pageSize=100&key=${fbApiKey}`;
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${encodeURIComponent(dbId)}/documents/registrations?pageSize=100&key=${fbApiKey}`;
       const response = await fetch(url);
       if (response.ok) {
         const data = await response.json();
